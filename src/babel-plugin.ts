@@ -149,6 +149,29 @@ function parseJSDoc(value: string): string | null {
   return result || null;
 }
 
+function isSensitiveComment(value: string): boolean {
+  let cleaned = value;
+  if (cleaned.startsWith('*')) {
+    cleaned = cleaned.slice(1);
+  }
+
+  const lines = cleaned.split('\n').map((line) => {
+    let l = line.trim();
+    if (l.startsWith('*')) {
+      l = l.slice(1).trim();
+    }
+    return l;
+  });
+
+  for (const line of lines) {
+    if (line.startsWith('@sensitive') || line.startsWith('@private')) {
+      return true;
+    }
+  }
+  return false;
+}
+
+
 export default function reactAgentBridgeBabelPlugin(): PluginObj<PluginState> {
   return {
     name: 'react-agent-bridge-babel-plugin',
@@ -303,8 +326,9 @@ export default function reactAgentBridgeBabelPlugin(): PluginObj<PluginState> {
           ? getNextHookIndex(componentPath)
           : 0;
 
-        // Extract JSDoc comment description if present
+        // Extract JSDoc comment description and sensitive metadata if present
         let description: string | undefined;
+        let sensitive = false;
         const leadingComments = findLeadingComments(callPath);
         if (leadingComments && leadingComments.length > 0) {
           const lastComment = leadingComments[leadingComments.length - 1];
@@ -313,6 +337,7 @@ export default function reactAgentBridgeBabelPlugin(): PluginObj<PluginState> {
             if (parsed) {
               description = parsed;
             }
+            sensitive = isSensitiveComment(lastComment.value);
           }
         }
 
@@ -338,17 +363,26 @@ export default function reactAgentBridgeBabelPlugin(): PluginObj<PluginState> {
           t.numericLiteral(hookIndex),
         ];
 
-        if (description) {
+        if (description || sensitive) {
           if (node.arguments.length > 0) {
-            args.push(node.arguments[0] as t.Expression);
+            args.push(node.arguments[0] as any);
           } else {
             args.push(t.identifier('undefined'));
           }
-          args.push(
-            t.objectExpression([
-              t.objectProperty(t.identifier('description'), t.stringLiteral(description)),
-            ])
-          );
+
+          const properties: t.ObjectProperty[] = [];
+          if (description) {
+            properties.push(
+              t.objectProperty(t.identifier('description'), t.stringLiteral(description))
+            );
+          }
+          if (sensitive) {
+            properties.push(
+              t.objectProperty(t.identifier('sensitive'), t.booleanLiteral(true))
+            );
+          }
+
+          args.push(t.objectExpression(properties));
         } else {
           args.push(...node.arguments);
         }

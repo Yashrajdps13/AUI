@@ -24,6 +24,7 @@ export interface StateSlot {
   setter: Function;      // The actual React dispatcher/setter reference
   hookIndex: number;     // Index/position in the component's hook linked list
   description?: string;  // Optional developer-provided description of the state
+  sensitive?: boolean;   // Optional flag indicating if the state contains sensitive data / PII
 }
 
 /**

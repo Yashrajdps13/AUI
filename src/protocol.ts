@@ -6,6 +6,7 @@ export interface SerializedStateSlot {
   key: string;
   hookIndex: number;
   description?: string;
+  sensitive?: boolean;
 }
 
 /**

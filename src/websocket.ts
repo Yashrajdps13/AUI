@@ -284,6 +284,7 @@ class AgentWebSocketManagerImpl {
           key: s.key,
           hookIndex: s.hookIndex,
           description: s.description,
+          sensitive: s.sensitive,
         })),
         interactiveElements: this.getInteractiveElements(entry.domRef),
       };
@@ -326,14 +327,15 @@ class AgentWebSocketManagerImpl {
 
       for (const slot of entry.stateSlots) {
         const target = `${componentId}.${slot.key}`;
-        const valStr = JSON.stringify(slot.value);
+        const valueToSend = slot.sensitive ? '[REDACTED]' : slot.value;
+        const valStr = JSON.stringify(valueToSend);
         const prevValStr = this.lastSentValues.get(target);
 
         if (forceFull || prevValStr !== valStr) {
           this.send({
             type: 'stateSnapshot',
             target,
-            value: slot.value,
+            value: valueToSend,
           });
           this.lastSentValues.set(target, valStr);
         }
@@ -373,8 +375,9 @@ class AgentWebSocketManagerImpl {
         if (entry) {
           for (const slot of entry.stateSlots) {
             const target = `${command.target}.${slot.key}`;
-            this.send({ type: 'stateSnapshot', target, value: slot.value });
-            this.lastSentValues.set(target, JSON.stringify(slot.value));
+            const valueToSend = slot.sensitive ? '[REDACTED]' : slot.value;
+            this.send({ type: 'stateSnapshot', target, value: valueToSend });
+            this.lastSentValues.set(target, JSON.stringify(valueToSend));
           }
         }
         break;
@@ -413,7 +416,8 @@ class AgentWebSocketManagerImpl {
         const slot = entry?.stateSlots.find((s) => s.key === stateKey);
 
         if (slot) {
-          this.send({ type: 'stateSnapshot', target: command.target, value: slot.value });
+          const valueToSend = slot.sensitive ? '[REDACTED]' : slot.value;
+          this.send({ type: 'stateSnapshot', target: command.target, value: valueToSend });
           this.send({ type: 'commandAck', commandId: command.commandId, success: true });
         } else {
           this.send({
@@ -427,13 +431,6 @@ class AgentWebSocketManagerImpl {
       }
 
       case 'setState': {
-        AgentLogger.addEntry({
-          type: 'info',
-          source: 'agent',
-          message: `setState -> ${command.target} (value: ${typeof command.value === 'object' ? JSON.stringify(command.value) : String(command.value)})`,
-          timestamp: Date.now(),
-        });
-
         const lastDot = command.target.lastIndexOf('.');
         if (lastDot === -1) {
           this.send({
@@ -450,6 +447,16 @@ class AgentWebSocketManagerImpl {
 
         const entry = registry.get(componentId);
         const slot = entry?.stateSlots.find((s) => s.key === stateKey);
+
+        const isSensitive = slot?.sensitive === true;
+        const loggedValue = isSensitive ? '[REDACTED]' : command.value;
+
+        AgentLogger.addEntry({
+          type: 'info',
+          source: 'agent',
+          message: `setState -> ${command.target} (value: ${typeof loggedValue === 'object' ? JSON.stringify(loggedValue) : String(loggedValue)})`,
+          timestamp: Date.now(),
+        });
 
         if (slot) {
           try {

@@ -5,6 +5,7 @@ import WebSocket from 'ws';
 import { AgentWebSocketManager } from './websocket.js';
 import { BridgeStore } from './store.js';
 import { ComponentEntry } from './types.js';
+import { AgentLogger } from './logger.js';
 
 // Configure the manager to use the ws library WebSocket client implementation in Node
 AgentWebSocketManager.WebSocketClass = WebSocket;
@@ -179,6 +180,128 @@ describe('AgentWebSocketManager', () => {
     });
 
     expect(mockSetter).toHaveBeenCalledWith(false);
+  });
+
+  it('should redact sensitive state values to [REDACTED] in all WebSocket communications and logs', async () => {
+    messagesReceived.length = 0;
+    const mockPinSetter = vi.fn();
+    const pinComponent: Omit<ComponentEntry, 'id'> = {
+      displayName: 'SecretCard',
+      fiberRef: null,
+      domRef: null,
+      stateSlots: [
+        { key: 'pin', value: '1234', setter: mockPinSetter, hookIndex: 0, sensitive: true }
+      ],
+      mountedAt: Date.now(),
+      route: '/secret'
+    };
+
+    BridgeStore.registerComponent('SecretCard#1', pinComponent);
+
+    // 1. Verify registry delta serializes sensitive flag
+    (AgentWebSocketManager as any).syncRegistryAndSubscriptions(true);
+    await new Promise<void>((resolve) => {
+      const check = () => {
+        const delta = messagesReceived.find((m) => m.type === 'registryDelta' && m.added.some((c: any) => c.id === 'SecretCard#1'));
+        if (delta) resolve();
+        else setTimeout(check, 50);
+      };
+      check();
+    });
+
+    const delta = messagesReceived.find((m) => m.type === 'registryDelta' && m.added.some((c: any) => c.id === 'SecretCard#1'));
+    const secretComp = delta.added.find((c: any) => c.id === 'SecretCard#1');
+    expect(secretComp.stateSlots[0].sensitive).toBe(true);
+
+    // 2. Verify state query is redacted
+    messagesReceived.length = 0;
+    serverSocket.send(JSON.stringify({
+      type: 'queryState',
+      commandId: 'cmd-pin-query',
+      target: 'SecretCard#1.pin'
+    }));
+
+    await new Promise<void>((resolve) => {
+      const check = () => {
+        const ack = messagesReceived.find((m) => m.type === 'commandAck' && m.commandId === 'cmd-pin-query');
+        if (ack) resolve();
+        else setTimeout(check, 50);
+      };
+      check();
+    });
+
+    const querySnapshot = messagesReceived.find((m) => m.type === 'stateSnapshot' && m.target === 'SecretCard#1.pin');
+    expect(querySnapshot.value).toBe('[REDACTED]');
+
+    // 3. Verify subscription is redacted
+    messagesReceived.length = 0;
+    serverSocket.send(JSON.stringify({
+      type: 'subscribe',
+      commandId: 'cmd-pin-sub',
+      target: 'SecretCard#1'
+    }));
+
+    await new Promise<void>((resolve) => {
+      const check = () => {
+        const ack = messagesReceived.find((m) => m.type === 'commandAck' && m.commandId === 'cmd-pin-sub');
+        if (ack) resolve();
+        else setTimeout(check, 50);
+      };
+      check();
+    });
+
+    const subSnapshot = messagesReceived.find((m) => m.type === 'stateSnapshot' && m.target === 'SecretCard#1.pin');
+    expect(subSnapshot.value).toBe('[REDACTED]');
+
+    // 4. Verify live update keeps the real value in React store
+    BridgeStore.updateStateSlotValue('SecretCard#1', 'pin', '4321');
+    const updatedEntry = BridgeStore.getSnapshot().get('SecretCard#1');
+    expect(updatedEntry?.stateSlots[0].value).toBe('4321');
+
+    // 5. Verify queryState after update still returns [REDACTED]
+    messagesReceived.length = 0;
+    serverSocket.send(JSON.stringify({
+      type: 'queryState',
+      commandId: 'cmd-pin-query-2',
+      target: 'SecretCard#1.pin'
+    }));
+
+    await new Promise<void>((resolve) => {
+      const check = () => {
+        const ack = messagesReceived.find((m) => m.type === 'commandAck' && m.commandId === 'cmd-pin-query-2');
+        if (ack) resolve();
+        else setTimeout(check, 50);
+      };
+      check();
+    });
+
+    const querySnapshot2 = messagesReceived.find((m) => m.type === 'stateSnapshot' && m.target === 'SecretCard#1.pin');
+    expect(querySnapshot2.value).toBe('[REDACTED]');
+
+    // 6. Verify setState logging is redacted in AgentLogger
+    messagesReceived.length = 0;
+    serverSocket.send(JSON.stringify({
+      type: 'setState',
+      commandId: 'cmd-pin-set',
+      target: 'SecretCard#1.pin',
+      value: '9999'
+    }));
+
+    await new Promise<void>((resolve) => {
+      const check = () => {
+        const ack = messagesReceived.find((m) => m.type === 'commandAck' && m.commandId === 'cmd-pin-set');
+        if (ack) resolve();
+        else setTimeout(check, 50);
+      };
+      check();
+    });
+
+    expect(mockPinSetter).toHaveBeenCalledWith('9999');
+    
+    const ledger = AgentLogger.getLedger();
+    const setEntry = ledger[ledger.length - 1];
+    expect(setEntry.message).toContain('[REDACTED]');
+    expect(setEntry.message).not.toContain('9999');
   });
 
   it('should extract interactiveElements with disabled and visible properties, and send renderSettled', async () => {

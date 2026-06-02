@@ -13,6 +13,7 @@ export default function App() {
 
   /**
    * @description The password associated with the username for login.
+   * @sensitive
    */
   const [password, setPassword] = useState('');
 

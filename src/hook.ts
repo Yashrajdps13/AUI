@@ -10,6 +10,7 @@ const activeInstanceIds = new Map<string, string>();
 
 export interface BridgeStateMetadata {
   description?: string;
+  sensitive?: boolean;
 }
 
 /**
@@ -74,6 +75,7 @@ export function useBridgeState<S>(
       setter: bridgeSetter.current,
       hookIndex,
       description: metadata?.description,
+      sensitive: metadata?.sensitive,
     };
 
     BridgeStore.registerStateSlot(componentId, componentName, slot);
@@ -81,7 +83,7 @@ export function useBridgeState<S>(
     return () => {
       BridgeStore.unregisterStateSlot(componentId, hookIndex);
     };
-  }, [componentId, componentName, stateKey, hookIndex, metadata?.description]);
+  }, [componentId, componentName, stateKey, hookIndex, metadata?.description, metadata?.sensitive]);
 
   // Keep the registry value in sync synchronously on state changes
   useIsomorphicLayoutEffect(() => {

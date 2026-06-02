@@ -134,6 +134,35 @@ describe('Babel Plugin', () => {
     expect(output).toContain('description: "The username of the user"');
   });
 
+  it('should parse @sensitive or @private tags to inject sensitive: true metadata', () => {
+    const code1 = `
+      import { useState } from 'react';
+      function Profile() {
+        /**
+         * The password of the user
+         * @sensitive
+         */
+        const [password, setPassword] = useState('secret');
+        return null;
+      }
+    `;
+    const output1 = transform(code1);
+    expect(output1).toContain('_useBridgeState("Profile", "password", 0');
+    expect(output1).toContain('description: "The password of the user"');
+    expect(output1).toContain('sensitive: true');
+
+    const code2 = `
+      import { useState } from 'react';
+      function MyCard() {
+        /** @private */
+        const [cardNumber, setCardNumber] = useState('');
+        return null;
+      }
+    `;
+    const output2 = transform(code2);
+    expect(output2).toContain('_useBridgeState("MyCard", "cardNumber", 0');
+    expect(output2).toContain('sensitive: true');
+  });
 
   it('should auto-inject react-agent-bridge preflight import when react-dom is imported', () => {
     const code = `
