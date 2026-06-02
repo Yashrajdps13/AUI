@@ -1,0 +1,24 @@
+# Git Commit and Versioning Rules
+
+## Git Commit Messages
+All commit messages in this repository must use the following uppercase prefix format:
+
+- **FEAT:** for introducing a new feature (e.g., `FEAT: add interactiveElements metadata to registry`)
+- **FIX:** for bug fixes (e.g., `FIX: resolve cart item rendering crash on null values`)
+- **ROLLOUT:** for publishing or deploying new versions (e.g., `ROLLOUT: release v0.2.0`)
+- **UPDATE:** for updating dependencies, configurations, or non-breaking API changes (e.g., `UPDATE: switch to gemini-2.5-flash model`)
+- **CHORE:** for general maintenance tasks, refactoring, or updating gitignore rules (e.g., `CHORE: update package dependencies`)
+- **DOCS:** for updating documentation files like README or walkthroughs (e.g., `DOCS: update walkthrough with dynamic selector fix`)
+- **TEST:** for adding or modifying unit/integration tests (e.g., `TEST: add test suite for websocket client scanner`)
+
+### Message Format:
+`<TYPE>: <description>`
+*Example:* `FIX: handle missing prices in cart items`
+
+---
+
+## Project Versioning
+We adhere to **Semantic Versioning (SemVer)**: `MAJOR.MINOR.PATCH` (e.g., `0.1.0` -> `0.2.0` -> `1.0.0`).
+- Increment **MAJOR** for any backward-incompatible API or protocol changes.
+- Increment **MINOR** for backward-compatible new functionality or features.
+- Increment **PATCH** for backward-compatible bug fixes.
