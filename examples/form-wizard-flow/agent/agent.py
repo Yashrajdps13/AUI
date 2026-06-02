@@ -1,7 +1,12 @@
 import asyncio
 import json
+import os
 import sys
 from typing import Dict, Any, List, Optional
+from dotenv import load_dotenv
+
+# Load local environment variables
+load_dotenv()
 
 # Global connection reference and latest registry cache
 ACTIVE_CONNECTION = None
@@ -172,6 +177,159 @@ async def run_registration_wizard(username, password, tier):
     print("\n[Success] Wizard registration successfully completed by AUI Agent!")
 
 # ==========================================
+# DYNAMIC REACT AGENT & HEURISTIC FALLBACK
+# ==========================================
+def has_llm_credentials() -> bool:
+    return bool(os.environ.get("GEMINI_API_KEY"))
+
+def parse_query_heuristically(query: str):
+    query_lower = query.lower()
+    
+    # Tier
+    tier = "free"
+    if "premium" in query_lower:
+        tier = "premium"
+        
+    # Username
+    username = "alice"
+    for word in ["name", "username", "named", "user"]:
+        if word in query_lower:
+            parts = query.split(word)
+            if len(parts) > 1:
+                subparts = parts[1].strip().split()
+                if subparts:
+                    username = subparts[0].strip().replace(":", "").replace("@", "")
+                    if username in ["a", "new", "with", "and", "is", "to", "for"] and len(subparts) > 1:
+                        username = subparts[1].strip().replace(":", "").replace("@", "")
+                    break
+
+    # Password
+    password = "secret123"
+    for word in ["password", "pass", "code"]:
+        if word in query_lower:
+            parts = query.split(word)
+            if len(parts) > 1:
+                subparts = parts[1].strip().split()
+                if subparts:
+                    password = subparts[0].strip().replace(":", "")
+                    if password in ["a", "new", "with", "and", "is", "to", "for"] and len(subparts) > 1:
+                        password = subparts[1].strip().replace(":", "")
+                    break
+    return username, password, tier
+
+async def run_dynamic_react_agent(query: str):
+    global LATEST_REGISTRY, LATEST_VALUES
+    
+    if not has_llm_credentials():
+        print("[Warning] No GEMINI_API_KEY found. Falling back to rule-based registration parser.")
+        username, password, tier = parse_query_heuristically(query)
+        await run_registration_wizard(username, password, tier)
+        return
+
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    from langchain_core.messages import SystemMessage, HumanMessage
+
+    print(f"\n=== Starting Dynamic ReAct Agent Loop ===")
+    print(f"Query: {query}")
+
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
+    max_steps = 12
+    step = 0
+
+    while step < max_steps:
+        step += 1
+        print(f"\n--- Agent Step {step} ---")
+
+        # Find App component ID
+        app_id = None
+        for cid in LATEST_REGISTRY.keys():
+            if cid.startswith("App#"):
+                app_id = cid
+                break
+
+        if not app_id:
+            print("[Error] App component not found in registry. Is the frontend loaded?")
+            return
+
+        # Format registry and current state values
+        registry_str = json.dumps(LATEST_REGISTRY, indent=2)
+        values_str = json.dumps(LATEST_VALUES, indent=2)
+
+        system_prompt = f"""
+You are an AI assistant that controls a React application state using a WebSocket Bridge.
+You receive the application's component registry schema showing components, their state slots (complete with description comments detailing what each state does), and all active, interactive DOM elements (buttons, inputs, checkboxes, etc.):
+---
+REGISTRY SCHEMA:
+{registry_str}
+---
+CURRENT STATE VALUES (Subscribed):
+{values_str}
+---
+
+Your goal is to satisfy the user's natural language request: "{query}"
+
+Available actions:
+1. Set state values (equivalent to typing or entering inputs):
+   {{"type": "setState", "commandId": "some-id", "target": "ComponentID.stateKey", "value": val}}
+2. Dispatch click, change or focus events to DOM elements:
+   {{"type": "dispatchEvent", "commandId": "some-id", "target": "ComponentID", "event": "click" | "change" | "focus", "payload": "selector-string-or-value"}}
+
+CRITICAL RULES:
+- Inspect the description comment of each state slot to determine which inputs correspond to user request details (e.g. username, password, tier).
+- When clicking buttons, checkboxes, or plan cards, locate the element in the component's `interactiveElements` metadata. Use the exact `selector` (e.g. "#btn-next-step-1" or "#btn-tier-premium" or "#btn-submit-wizard") as the `payload` for `dispatchEvent` click.
+- Only interact with interactive elements that are `visible: true` and NOT `disabled: true`.
+- If the user's goal has been fully accomplished (e.g. the registration success screen is visible, showing the registration is complete, and no more steps/inputs are required), respond with the word: DONE.
+- Otherwise, plan the next single command or small sequence of commands to execute.
+- Respond ONLY with the JSON array of commands or the single word DONE. No markdown blocks, formatting, or extra text.
+
+Example Response (next steps):
+[
+  {{"type": "setState", "commandId": "fill-1", "target": "App#_r_0_.username", "value": "Alice"}}
+]
+
+Example Response (when complete):
+DONE
+"""
+
+        response = await asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: llm.invoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=query)
+            ])
+        )
+
+        content = response.content.strip()
+        if content == "DONE" or "DONE" in content:
+            print("\n[Success] Dynamic agent has satisfied the request!")
+            return
+
+        try:
+            if content.startswith("```json"):
+                content = content[7:]
+            if content.endswith("```"):
+                content = content[:-3]
+            commands = json.loads(content.strip())
+        except Exception as e:
+            print(f"[Error] Failed to parse agent response as JSON: {e}. Output was:\n{content}")
+            return
+
+        if not isinstance(commands, list) or len(commands) == 0:
+            print(f"[Error] No valid commands planned. Response: {content}")
+            return
+
+        for cmd in commands:
+            success = await execute_command_and_wait(cmd)
+            if not success:
+                print(f"[Error] Command execution failed: {cmd}")
+                return
+
+        # Small pause for rendering
+        await asyncio.sleep(0.3)
+
+    print("[Error] Dynamic agent reached step limit without completion.")
+
+# ==========================================
 # WEBSOCKET SERVER IMPLEMENTATION
 # ==========================================
 import websockets
@@ -244,9 +402,13 @@ async def start_server():
 async def cli_loop():
     print("\n=======================================================")
     print("AUI Form Wizard CLI Controller")
+    if has_llm_credentials():
+        print("Model Mode: Gemini 2.5 Flash LLM ReAct loop active.")
+    else:
+        print("Model Mode: Local Rule-based Parser active (No Gemini key found).")
     print("Commands:")
-    print("  register <free|premium> <username> <password>")
-    print("  e.g. register premium alice secret123")
+    print("  Input any natural language registration request.")
+    print("  e.g. Register a new user with name Alice and password test123")
     print("=======================================================\n")
 
     loop = asyncio.get_event_loop()
@@ -262,19 +424,8 @@ async def cli_loop():
             print("Error: No React client connected. Please open the Form Wizard frontend in your browser.")
             continue
 
-        parts = query.split()
-        if len(parts) == 4 and parts[0].lower() == "register":
-            tier = parts[1]
-            username = parts[2]
-            password = parts[3]
-            if tier.lower() not in ["free", "premium"]:
-                print("Error: tier must be 'free' or 'premium'")
-                continue
-            
-            # Start the multi-step registration sequence
-            await run_registration_wizard(username, password, tier)
-        else:
-            print("Invalid command. Use: register <free|premium> <username> <password>")
+        # Run the dynamic ReAct agent loop
+        await run_dynamic_react_agent(query)
 
 async def main():
     await asyncio.gather(
