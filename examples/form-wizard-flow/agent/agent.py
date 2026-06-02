@@ -144,7 +144,10 @@ async def run_registration_wizard(username, password, tier):
                 "commandId": "check-terms",
                 "target": app_id,
                 "event": "change",
-                "payload": True
+                "payload": {
+                    "selector": "#input-accept-terms",
+                    "value": True
+                }
             })
             if not success: return
         else:

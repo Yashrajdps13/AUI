@@ -465,12 +465,31 @@ class AgentWebSocketManagerImpl {
             }
             targetDom.focus();
           } else if (command.event === 'change') {
-            // Check if payload is provided to set input value
-            if (command.payload !== undefined && 'value' in dom) {
-              (dom as any).value = command.payload;
+            let targetDom = dom;
+            let valueToSet = command.payload;
+
+            if (command.payload && typeof command.payload === 'object') {
+              const payloadObj = command.payload as any;
+              if (typeof payloadObj.selector === 'string') {
+                const selected = dom.querySelector(payloadObj.selector);
+                if (selected instanceof HTMLElement) targetDom = selected;
+              }
+              if ('value' in payloadObj) {
+                valueToSet = payloadObj.value;
+              }
             }
-            const ev = new Event('change', { bubbles: true });
-            dom.dispatchEvent(ev);
+
+            if (targetDom instanceof HTMLInputElement && targetDom.type === 'checkbox') {
+              targetDom.checked = Boolean(valueToSet);
+            } else if ('value' in targetDom) {
+              (targetDom as any).value = valueToSet;
+            }
+
+            const inputEv = new Event('input', { bubbles: true });
+            targetDom.dispatchEvent(inputEv);
+
+            const changeEv = new Event('change', { bubbles: true });
+            targetDom.dispatchEvent(changeEv);
           } else {
             throw new Error(`Unsupported event type "${command.event}"`);
           }
