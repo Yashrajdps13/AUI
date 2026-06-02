@@ -1,0 +1,22 @@
+# Node
+node_modules/
+dist/
+
+# Examples build outputs
+examples/frontend/dist/
+examples/frontend/node_modules/
+
+# Python Virtual Environment and caches
+examples/agent/venv/
+__pycache__/
+*.pyc
+
+# Local env files
+.env
+.env.local
+
+# IDE / OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
