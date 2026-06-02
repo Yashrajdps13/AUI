@@ -53,7 +53,17 @@ export type AgentCommand =
   | { type: 'subscribe'; commandId: string; target: string }
   | { type: 'unsubscribe'; commandId: string; target: string }
   | { type: 'queryLedger'; commandId: string }
-  | { type: 'callAction'; commandId: string; target: string; args: unknown[] };
+  | { type: 'callAction'; commandId: string; target: string; args: unknown[] }
+  | {
+      type: 'waitFor';
+      commandId: string;
+      target: string;
+      condition: {
+        operator: 'equals' | 'truthy' | 'falsy' | 'changed';
+        value?: unknown;
+      };
+      timeoutMs?: number;
+    };
 
 /**
  * Messages sent to the Agent (Bridge -> Agent).

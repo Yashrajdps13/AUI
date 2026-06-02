@@ -21,6 +21,15 @@ class AgentWebSocketManagerImpl {
   private lastSentRegistry: Map<string, string> = new Map(); // id -> JSON-serialized component
   private lastSentValues: Map<string, string> = new Map(); // "componentId.stateKey" -> JSON-serialized value
 
+  // Active condition watchers for waitFor command
+  private activeWatchers: Map<string, {
+    commandId: string;
+    target: string;
+    condition: { operator: 'equals' | 'truthy' | 'falsy' | 'changed'; value?: unknown };
+    initialValue: unknown;
+    timeoutTimer: any;
+  }> = new Map();
+
   // Allow overriding WebSocket class (for Node.js testing environments)
   public WebSocketClass: any = typeof WebSocket !== 'undefined' ? WebSocket : null;
 
@@ -91,6 +100,11 @@ class AgentWebSocketManagerImpl {
     this.subscribedComponents.clear();
     this.lastSentRegistry.clear();
     this.lastSentValues.clear();
+
+    for (const watcher of this.activeWatchers.values()) {
+      clearTimeout(watcher.timeoutTimer);
+    }
+    this.activeWatchers.clear();
   }
 
   /**
@@ -262,10 +276,67 @@ class AgentWebSocketManagerImpl {
     return list;
   }
 
+  private getTargetValue(target: string): { found: boolean; value?: unknown } {
+    const registry = BridgeStore.getSnapshot();
+    const lastDot = target.lastIndexOf('.');
+    if (lastDot === -1) return { found: false };
+
+    const componentId = target.substring(0, lastDot);
+    const stateKey = target.substring(lastDot + 1);
+
+    const entry = registry.get(componentId);
+    const slot = entry?.stateSlots.find((s) => s.key === stateKey);
+
+    if (!slot) return { found: false };
+    return { found: true, value: slot.value };
+  }
+
+  private checkWatcherCondition(watcher: {
+    target: string;
+    condition: { operator: 'equals' | 'truthy' | 'falsy' | 'changed'; value?: unknown };
+    initialValue: unknown;
+  }): boolean {
+    const { found, value } = this.getTargetValue(watcher.target);
+    if (!found) return false;
+
+    const op = watcher.condition.operator;
+    const targetVal = watcher.condition.value;
+
+    if (op === 'equals') {
+      if (typeof targetVal === 'object' && targetVal !== null) {
+        return JSON.stringify(value) === JSON.stringify(targetVal);
+      }
+      return value === targetVal;
+    } else if (op === 'truthy') {
+      return !!value;
+    } else if (op === 'falsy') {
+      return !value;
+    } else if (op === 'changed') {
+      if (typeof watcher.initialValue === 'object' && watcher.initialValue !== null) {
+        return JSON.stringify(value) !== JSON.stringify(watcher.initialValue);
+      }
+      return value !== watcher.initialValue;
+    }
+    return false;
+  }
+
+  private evaluateWatchers(): void {
+    if (this.activeWatchers.size === 0) return;
+
+    for (const [commandId, watcher] of this.activeWatchers.entries()) {
+      if (this.checkWatcherCondition(watcher)) {
+        clearTimeout(watcher.timeoutTimer);
+        this.activeWatchers.delete(commandId);
+        this.send({ type: 'commandAck', commandId, success: true });
+      }
+    }
+  }
+
   /**
    * Scans current store registry, diffs against cache, and publishes registryDelta and stateSnapshots.
    */
   private syncRegistryAndSubscriptions(forceFull = false): void {
+    this.evaluateWatchers();
     const currentRegistry = BridgeStore.getSnapshot();
     const added: SerializedComponentEntry[] = [];
     const updated: SerializedComponentEntry[] = [];
@@ -653,6 +724,65 @@ class AgentWebSocketManagerImpl {
             error: `Action invocation failed: ${err.message || err}`,
           });
         }
+        break;
+      }
+
+      case 'waitFor': {
+        const { found, value } = this.getTargetValue(command.target);
+        if (!found) {
+          this.send({
+            type: 'commandAck',
+            commandId: command.commandId,
+            success: false,
+            error: `Target state slot "${command.target}" not found in registry.`,
+          });
+          return;
+        }
+
+        const op = command.condition.operator;
+        const targetVal = command.condition.value;
+        let isSatisfied = false;
+
+        if (op === 'equals') {
+          if (typeof targetVal === 'object' && targetVal !== null) {
+            isSatisfied = JSON.stringify(value) === JSON.stringify(targetVal);
+          } else {
+            isSatisfied = value === targetVal;
+          }
+        } else if (op === 'truthy') {
+          isSatisfied = !!value;
+        } else if (op === 'falsy') {
+          isSatisfied = !value;
+        } else if (op === 'changed') {
+          isSatisfied = false;
+        }
+
+        if (isSatisfied) {
+          this.send({ type: 'commandAck', commandId: command.commandId, success: true });
+          return;
+        }
+
+        const timeoutMs = command.timeoutMs ?? 5000;
+        const timeoutTimer = setTimeout(() => {
+          const watcher = this.activeWatchers.get(command.commandId);
+          if (watcher) {
+            this.activeWatchers.delete(command.commandId);
+            this.send({
+              type: 'commandAck',
+              commandId: command.commandId,
+              success: false,
+              error: `Timeout waiting for condition on "${command.target}".`,
+            });
+          }
+        }, timeoutMs);
+
+        this.activeWatchers.set(command.commandId, {
+          commandId: command.commandId,
+          target: command.target,
+          condition: command.condition,
+          initialValue: value,
+          timeoutTimer,
+        });
         break;
       }
 
