@@ -1,10 +1,29 @@
 import { useState } from 'react';
 
 export default function App() {
-  const [step, setStep] = useState('account'); // 'account' | 'preference' | 'success'
+  /**
+   * @description The current step of the multi-step registration wizard. Values can be 'account' (step 1), 'preference' (step 2), or 'success' (step 3).
+   */
+  const [step, setStep] = useState('account');
+
+  /**
+   * @description The chosen username for the account registration.
+   */
   const [username, setUsername] = useState('');
+
+  /**
+   * @description The password associated with the username for login.
+   */
   const [password, setPassword] = useState('');
-  const [tier, setTier] = useState('free'); // 'free' | 'premium'
+
+  /**
+   * @description The subscription tier: 'free' or 'premium'.
+   */
+  const [tier, setTier] = useState('free');
+
+  /**
+   * @description Boolean flag signifying if terms and conditions have been accepted by the user (required only for the premium tier).
+   */
   const [acceptTerms, setAcceptTerms] = useState(false);
 
   const isStep1Disabled = username.trim() === '' || password.trim() === '';

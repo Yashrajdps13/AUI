@@ -8,6 +8,10 @@ const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffec
 // Keep track of the active instance ID for each component name during the synchronous render pass
 const activeInstanceIds = new Map<string, string>();
 
+export interface BridgeStateMetadata {
+  description?: string;
+}
+
 /**
  * Interceptor hook replacing React's default `useState`.
  * Automatically registers the state slot in the Bridge registry,
@@ -17,19 +21,22 @@ export function useBridgeState<S>(
   componentName: string,
   stateKey: string,
   hookIndex: number,
-  initialState: S | (() => S)
+  initialState: S | (() => S),
+  metadata?: BridgeStateMetadata
 ): [S, React.Dispatch<React.SetStateAction<S>>];
 export function useBridgeState<S = undefined>(
   componentName: string,
   stateKey: string,
   hookIndex: number,
-  initialState?: S | (() => S)
+  initialState?: S | (() => S),
+  metadata?: BridgeStateMetadata
 ): [S | undefined, React.Dispatch<React.SetStateAction<S | undefined>>];
 export function useBridgeState<S>(
   componentName: string,
   stateKey: string,
   hookIndex: number,
-  initialState?: S | (() => S)
+  initialState?: S | (() => S),
+  metadata?: BridgeStateMetadata
 ) {
   const [state, setState] = useState<S | undefined>(initialState);
 
@@ -66,6 +73,7 @@ export function useBridgeState<S>(
       value: latestValueRef.current,
       setter: bridgeSetter.current,
       hookIndex,
+      description: metadata?.description,
     };
 
     BridgeStore.registerStateSlot(componentId, componentName, slot);
@@ -73,7 +81,7 @@ export function useBridgeState<S>(
     return () => {
       BridgeStore.unregisterStateSlot(componentId, hookIndex);
     };
-  }, [componentId, componentName, stateKey, hookIndex]);
+  }, [componentId, componentName, stateKey, hookIndex, metadata?.description]);
 
   // Keep the registry value in sync synchronously on state changes
   useIsomorphicLayoutEffect(() => {

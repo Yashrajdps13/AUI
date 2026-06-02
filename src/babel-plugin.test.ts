@@ -103,6 +103,38 @@ describe('Babel Plugin', () => {
     expect(output).toContain('_useBridgeState("Counter", "state_0", 0, 0)');
   });
 
+  it('should extract JSDoc description and pass it as metadata to _useBridgeState', () => {
+    const code = `
+      import { useState } from 'react';
+      function MyComponent() {
+        /** The current count of clicks */
+        const [count, setCount] = useState(0);
+        return null;
+      }
+    `;
+    const output = transform(code);
+    expect(output).toContain('_useBridgeState("MyComponent", "count", 0, 0, {');
+    expect(output).toContain('description: "The current count of clicks"');
+  });
+
+  it('should parse @description or @desc tags inside JSDoc comment', () => {
+    const code = `
+      import { useState } from 'react';
+      function Profile() {
+        /**
+         * @desc The username of the user
+         * @default 'guest'
+         */
+        const [username, setUsername] = useState();
+        return null;
+      }
+    `;
+    const output = transform(code);
+    expect(output).toContain('_useBridgeState("Profile", "username", 0, undefined, {');
+    expect(output).toContain('description: "The username of the user"');
+  });
+
+
   it('should auto-inject react-agent-bridge preflight import when react-dom is imported', () => {
     const code = `
       import React from 'react';

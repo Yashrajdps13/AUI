@@ -79,6 +79,76 @@ interface PluginState {
   importsReactDOM?: boolean;
 }
 
+function findLeadingComments(callPath: NodePath<any>): t.Comment[] | undefined {
+  let currentPath: NodePath<any> | null = callPath;
+  while (currentPath && !currentPath.isFunction()) {
+    if (currentPath.node.leadingComments && currentPath.node.leadingComments.length > 0) {
+      return currentPath.node.leadingComments;
+    }
+    if (currentPath.isStatement()) {
+      break;
+    }
+    currentPath = currentPath.parentPath;
+  }
+  return undefined;
+}
+
+function parseJSDoc(value: string): string | null {
+  let cleaned = value;
+  if (cleaned.startsWith('*')) {
+    cleaned = cleaned.slice(1);
+  }
+
+  const lines = cleaned.split('\n').map((line) => {
+    let l = line.trim();
+    if (l.startsWith('*')) {
+      l = l.slice(1).trim();
+    }
+    return l;
+  });
+
+  const descriptionLines: string[] = [];
+  let inDescriptionTag = false;
+  let hasDescriptionTag = false;
+
+  for (const line of lines) {
+    const matchDesc = line.match(/^@(description|desc)\b\s*(.*)/i);
+    if (matchDesc) {
+      inDescriptionTag = true;
+      hasDescriptionTag = true;
+      if (matchDesc[2]) {
+        descriptionLines.push(matchDesc[2]);
+      }
+      continue;
+    }
+
+    if (line.startsWith('@')) {
+      inDescriptionTag = false;
+      continue;
+    }
+
+    if (inDescriptionTag) {
+      descriptionLines.push(line);
+    }
+  }
+
+  if (!hasDescriptionTag) {
+    for (const line of lines) {
+      if (line.startsWith('@')) {
+        break;
+      }
+      descriptionLines.push(line);
+    }
+  }
+
+  const result = descriptionLines
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .join(' ');
+
+  return result || null;
+}
+
 export default function reactAgentBridgeBabelPlugin(): PluginObj<PluginState> {
   return {
     name: 'react-agent-bridge-babel-plugin',
@@ -233,6 +303,19 @@ export default function reactAgentBridgeBabelPlugin(): PluginObj<PluginState> {
           ? getNextHookIndex(componentPath)
           : 0;
 
+        // Extract JSDoc comment description if present
+        let description: string | undefined;
+        const leadingComments = findLeadingComments(callPath);
+        if (leadingComments && leadingComments.length > 0) {
+          const lastComment = leadingComments[leadingComments.length - 1];
+          if (lastComment && lastComment.type === 'CommentBlock') {
+            const parsed = parseJSDoc(lastComment.value);
+            if (parsed) {
+              description = parsed;
+            }
+          }
+        }
+
         // Determine state key/name from variable assignment
         let stateKey = `state_${hookIndex}`;
         const parent = callPath.parentPath;
@@ -249,12 +332,28 @@ export default function reactAgentBridgeBabelPlugin(): PluginObj<PluginState> {
         }
 
         // Replace CallExpression with _useBridgeState("ComponentName", "stateKey", hookIndex, ...args)
-        const transformedCall = t.callExpression(t.identifier('_useBridgeState'), [
+        const args: any[] = [
           t.stringLiteral(componentName),
           t.stringLiteral(stateKey),
           t.numericLiteral(hookIndex),
-          ...node.arguments,
-        ]);
+        ];
+
+        if (description) {
+          if (node.arguments.length > 0) {
+            args.push(node.arguments[0] as t.Expression);
+          } else {
+            args.push(t.identifier('undefined'));
+          }
+          args.push(
+            t.objectExpression([
+              t.objectProperty(t.identifier('description'), t.stringLiteral(description)),
+            ])
+          );
+        } else {
+          args.push(...node.arguments);
+        }
+
+        const transformedCall = t.callExpression(t.identifier('_useBridgeState'), args);
 
         callPath.replaceWith(transformedCall);
         state.transformed = true;

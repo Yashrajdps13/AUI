@@ -7,6 +7,23 @@ class BridgeStoreImpl {
   private registry: BridgeRegistry = new Map();
   private listeners: Set<() => void> = new Set();
   private refCounts: Map<string, Set<number>> = new Map();
+  private agentConnected: boolean = false;
+
+  /**
+   * Returns true if the agent is currently connected via websocket.
+   */
+  isAgentConnected = (): boolean => {
+    return this.agentConnected;
+  };
+
+  /**
+   * Sets the agent connection status and notifies subscribers.
+   */
+  setAgentConnected(connected: boolean): void {
+    if (this.agentConnected === connected) return;
+    this.agentConnected = connected;
+    this.notify();
+  }
 
   /**
    * Subscribes to store updates.
@@ -243,3 +260,16 @@ export function useBridgeRegistry(): BridgeRegistry {
     BridgeStore.getServerSnapshot
   );
 }
+
+/**
+ * React hook to check if an agent is currently connected.
+ * Safe to use in Concurrent Mode and SSR environments.
+ */
+export function useIsAgentConnected(): boolean {
+  return useSyncExternalStore(
+    BridgeStore.subscribe,
+    BridgeStore.isAgentConnected,
+    () => false
+  );
+}
+

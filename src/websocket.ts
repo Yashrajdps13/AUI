@@ -116,6 +116,11 @@ class AgentWebSocketManagerImpl {
   }
 
   private onConnected(): void {
+    BridgeStore.setAgentConnected(true);
+    if (typeof document !== 'undefined') {
+      document.body.classList.add('aui-agent-mode');
+    }
+
     // Sync the registry updates
     this.unsubscribeStore = BridgeStore.subscribe(() => {
       this.syncRegistryAndSubscriptions();
@@ -126,6 +131,11 @@ class AgentWebSocketManagerImpl {
   }
 
   private onDisconnected(): void {
+    BridgeStore.setAgentConnected(false);
+    if (typeof document !== 'undefined') {
+      document.body.classList.remove('aui-agent-mode');
+    }
+
     if (this.unsubscribeStore) {
       this.unsubscribeStore();
       this.unsubscribeStore = null;
@@ -261,6 +271,7 @@ class AgentWebSocketManagerImpl {
         stateSlots: entry.stateSlots.map((s) => ({
           key: s.key,
           hookIndex: s.hookIndex,
+          description: s.description,
         })),
         interactiveElements: this.getInteractiveElements(entry.domRef),
       };

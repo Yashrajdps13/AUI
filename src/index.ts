@@ -1,7 +1,7 @@
 export * from './types.js';
 export * from './protocol.js';
-export { BridgeStore, useBridgeRegistry } from './store.js';
-export { useBridgeState } from './hook.js';
+export { BridgeStore, useBridgeRegistry, useIsAgentConnected } from './store.js';
+export { useBridgeState, BridgeStateMetadata } from './hook.js';
 export { initFiberScanner } from './scanner.js';
 export { AgentWebSocketManager } from './websocket.js';
 

@@ -23,6 +23,7 @@ export interface StateSlot {
   value: unknown;        // The current memoizedState value
   setter: Function;      // The actual React dispatcher/setter reference
   hookIndex: number;     // Index/position in the component's hook linked list
+  description?: string;  // Optional developer-provided description of the state
 }
 
 /**
