@@ -17,6 +17,13 @@ export interface SerializedComponentEntry {
   mountedAt: number;
   route: string | null;
   stateSlots: SerializedStateSlot[];
+  interactiveElements?: {
+    selector: string;
+    tagName: string;
+    text?: string;
+    id?: string;
+    placeholder?: string;
+  }[];
 }
 
 /**

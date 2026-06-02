@@ -141,6 +141,69 @@ class AgentWebSocketManagerImpl {
   }
 
   /**
+   * Helper to scan all interactive elements (buttons, links, inputs, elements with action IDs)
+   * under a DOM reference to expose to the agent planner.
+   */
+  private getInteractiveElements(dom: HTMLElement | null): {
+    selector: string;
+    tagName: string;
+    text?: string;
+    id?: string;
+    placeholder?: string;
+  }[] {
+    if (!dom || typeof window === 'undefined') return [];
+    const list: any[] = [];
+    try {
+      const elements = dom.querySelectorAll('button, a, input, select, textarea, [id], [role="button"]');
+      const allElements = [dom, ...Array.from(elements)];
+      const seenSelectors = new Set<string>();
+
+      for (const el of allElements) {
+        if (!(el instanceof HTMLElement)) continue;
+
+        const isInteractive =
+          el.tagName === 'BUTTON' ||
+          el.tagName === 'A' ||
+          el.tagName === 'INPUT' ||
+          el.tagName === 'SELECT' ||
+          el.tagName === 'TEXTAREA' ||
+          el.getAttribute('role') === 'button' ||
+          (el.id && (el.id.startsWith('btn-') || el.id.startsWith('input-')));
+
+        if (!isInteractive) continue;
+
+        let selector = '';
+        if (el.id) {
+          selector = `#${el.id}`;
+        } else {
+          selector = el.tagName.toLowerCase();
+          if (el.className) {
+            const classes = String(el.className).split(/\s+/).filter(Boolean).map(c => `.${c}`).join('');
+            selector += classes;
+          }
+        }
+
+        if (seenSelectors.has(selector)) continue;
+        seenSelectors.add(selector);
+
+        const text = el.innerText ? el.innerText.trim().substring(0, 100) : '';
+        const placeholder = el.getAttribute('placeholder') || undefined;
+
+        list.push({
+          selector,
+          tagName: el.tagName,
+          text: text || undefined,
+          id: el.id || undefined,
+          placeholder: placeholder || undefined,
+        });
+      }
+    } catch (err) {
+      console.error('Error scanning interactive elements:', err);
+    }
+    return list;
+  }
+
+  /**
    * Scans current store registry, diffs against cache, and publishes registryDelta and stateSnapshots.
    */
   private syncRegistryAndSubscriptions(forceFull = false): void {
@@ -162,6 +225,7 @@ class AgentWebSocketManagerImpl {
           key: s.key,
           hookIndex: s.hookIndex,
         })),
+        interactiveElements: this.getInteractiveElements(entry.domRef),
       };
 
       const serializedStr = JSON.stringify(serialized);

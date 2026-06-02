@@ -157,7 +157,7 @@ def get_llm_planner_node():
             
             system_prompt = f"""
 You are an AI browser controller that operates a React application state via a WebSocket Bridge.
-You receive a component registry schema showing components and their state slots:
+You receive a component registry schema showing components, their state slots, and their live interactive DOM elements (buttons, inputs, links, etc.):
 ---
 REGISTRY SCHEMA:
 {registry_str}
@@ -175,9 +175,10 @@ Available commands:
    {{"type": "dispatchEvent", "commandId": "unique-id", "target": "ComponentID", "event": "click" | "focus" | "change", "payload": "selector-string-or-value"}}
 
 CRITICAL RULES FOR COMMAND SELECTION:
+- The components in the REGISTRY SCHEMA contain an `interactiveElements` list, which lists DOM elements that can be interacted with, along with their `selector`, `text` content, and `id`.
+- When performing a click event (like clicking a product, coupon button, checkout, or place order button), select the appropriate element from the component's `interactiveElements` list, and use its `selector` (e.g. "#btn-submit-order") as the `payload` for `dispatchEvent`.
 - ALWAYS prefer `dispatchEvent` click commands for UI-based actions (such as adding products, navigating steps, clicking buttons, or applying coupons).
   - Example: To add an organic apple, DO NOT set the `cart` state directly. Instead, click the button using a dispatchEvent with target "App#...", event "click", and payload "#btn-prod-apple".
-  - Example: To click checkout, click the button using a dispatchEvent with target "App#...", event "click", and payload "#btn-go-to-checkout".
 - ONLY use `setState` for simple user inputs/text fields (like `fullName`, `email`, `coupon`) that are typically modified by typing.
 - NEVER use `setState` to write directly to complex state structures like lists or objects (e.g. `cart`) as that bypasses application logic and triggers crashes.
 
