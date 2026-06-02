@@ -14,6 +14,7 @@ LATEST_REGISTRY: Dict[str, Any] = {}
 LATEST_VALUES: Dict[str, Any] = {}
 COMMAND_FUTURE: Optional[asyncio.Future] = None
 SETTLE_FUTURE: Optional[asyncio.Future] = None
+LEDGER_FUTURE: Optional[asyncio.Future] = None
 
 # ==========================================
 # COMMAND RUNNER HELPER (Awaits Ack + Render Settlement)
@@ -335,7 +336,7 @@ DONE
 import websockets
 
 async def handle_ws(websocket):
-    global ACTIVE_CONNECTION, LATEST_REGISTRY, LATEST_VALUES, COMMAND_FUTURE, SETTLE_FUTURE
+    global ACTIVE_CONNECTION, LATEST_REGISTRY, LATEST_VALUES, COMMAND_FUTURE, SETTLE_FUTURE, LEDGER_FUTURE
     print("\n[Bridge Connected] React application successfully linked!")
     ACTIVE_CONNECTION = websocket
 
@@ -382,6 +383,19 @@ async def handle_ws(websocket):
                 if SETTLE_FUTURE and not SETTLE_FUTURE.done():
                     SETTLE_FUTURE.set_result(data)
 
+            elif msg_type == "appLog":
+                entry = data.get("entry", {})
+                from datetime import datetime
+                t_str = datetime.fromtimestamp(entry.get("timestamp", 0) / 1000).strftime('%H:%M:%S')
+                print(f"\n[STREAMED ERROR LOG] [{t_str}] [Source: {entry.get('source')}] {entry.get('message')}")
+                if entry.get("stack"):
+                    print(entry.get("stack"))
+                print("Agent Query > ", end="", flush=True)
+
+            elif msg_type == "ledgerSnapshot":
+                if LEDGER_FUTURE and not LEDGER_FUTURE.done():
+                    LEDGER_FUTURE.set_result(data)
+
     except websockets.exceptions.ConnectionClosedOK:
         print("\n[Bridge Disconnected] React app closed the connection.")
     except Exception as e:
@@ -409,6 +423,7 @@ async def cli_loop():
     print("Commands:")
     print("  Input any natural language registration request.")
     print("  e.g. Register a new user with name Alice and password test123")
+    print("  ledger          - Query the circular log ledger from the browser")
     print("=======================================================\n")
 
     loop = asyncio.get_event_loop()
@@ -422,6 +437,32 @@ async def cli_loop():
 
         if not ACTIVE_CONNECTION:
             print("Error: No React client connected. Please open the Form Wizard frontend in your browser.")
+            continue
+
+        if query.lower() == "ledger":
+            LEDGER_FUTURE = asyncio.get_running_loop().create_future()
+            await ACTIVE_CONNECTION.send(json.dumps({
+                "type": "queryLedger",
+                "commandId": "get-ledger-snapshot"
+            }))
+            
+            try:
+                from datetime import datetime
+                snapshot = await asyncio.wait_for(LEDGER_FUTURE, timeout=3.0)
+                ledger = snapshot.get("ledger", [])
+                print("\n--- Circular Log Ledger Snapshot (Browser Flight Recorder) ---")
+                if not ledger:
+                    print("Ledger is empty.")
+                else:
+                    for i, log in enumerate(ledger):
+                        t = datetime.fromtimestamp(log.get("timestamp", 0) / 1000).strftime('%H:%M:%S')
+                        log_type = log.get("type").upper()
+                        print(f"[{i:02d}] [{t}] [{log_type}] [Source: {log.get('source')}] {log.get('message')}")
+                print("---------------------------------------------------------------\n")
+            except asyncio.TimeoutError:
+                print("Failed to query ledger snapshot (timeout).")
+            finally:
+                LEDGER_FUTURE = None
             continue
 
         # Run the dynamic ReAct agent loop
