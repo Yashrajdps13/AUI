@@ -236,6 +236,7 @@ async def run_dynamic_react_agent(query: str):
     llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
     max_steps = 12
     step = 0
+    history = []
 
     while step < max_steps:
         step += 1
@@ -256,6 +257,13 @@ async def run_dynamic_react_agent(query: str):
         registry_str = json.dumps(LATEST_REGISTRY, indent=2)
         values_str = json.dumps(LATEST_VALUES, indent=2)
 
+        history_str = ""
+        if history:
+            history_str = "\nHISTORY OF PREVIOUSLY EXECUTED COMMANDS:\n"
+            for h_step, h_cmds in enumerate(history, 1):
+                history_str += f"Step {h_step}: {json.dumps(h_cmds)}\n"
+            history_str += "---\n"
+
         system_prompt = f"""
 You are an AI assistant that controls a React application state using a WebSocket Bridge.
 You receive the application's component registry schema showing components, their state slots (complete with description comments detailing what each state does), and all active, interactive DOM elements (buttons, inputs, checkboxes, etc.):
@@ -266,7 +274,7 @@ REGISTRY SCHEMA:
 CURRENT STATE VALUES (Subscribed):
 {values_str}
 ---
-
+{history_str}
 Your goal is to satisfy the user's natural language request: "{query}"
 
 Available actions:
@@ -325,6 +333,8 @@ DONE
             if not success:
                 print(f"[Error] Command execution failed: {cmd}")
                 return
+
+        history.append(commands)
 
         # Small pause for rendering
         await asyncio.sleep(0.3)
