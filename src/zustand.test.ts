@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createStore } from 'zustand/vanilla';
 import { bridgeZustand } from './zustand.js';
 import { BridgeStore } from './store.js';
@@ -139,5 +139,34 @@ describe('bridgeZustand', () => {
     cleanup();
 
     expect(BridgeStore.getSnapshot().has('ZustandStore#Auth')).toBe(false);
+  });
+
+  it('supports custom actions mapping and action exclusion via options', () => {
+    const customActionSpy = vi.fn();
+    const cleanup = bridgeZustand('Auth', store, {
+      actions: {
+        customAction: customActionSpy,
+      },
+      excludeActions: ['increment', 'setUsername'],
+    });
+
+    const registry = BridgeStore.getSnapshot();
+    const entry = registry.get('ZustandStore#Auth');
+
+    expect(entry).toBeDefined();
+    // increment and setUsername should be excluded
+    expect(entry?.actions?.increment).toBeUndefined();
+    expect(entry?.actions?.setUsername).toBeUndefined();
+
+    // setToken and asyncAction should still be included
+    expect(entry?.actions?.setToken).toBeDefined();
+    expect(entry?.actions?.asyncAction).toBeDefined();
+
+    // customAction should be included and callable
+    expect(entry?.actions?.customAction).toBeDefined();
+    entry?.actions?.customAction('hello');
+    expect(customActionSpy).toHaveBeenCalledWith('hello');
+
+    cleanup();
   });
 });
