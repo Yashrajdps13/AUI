@@ -1,6 +1,7 @@
 import { startTransition } from 'react';
 import { BridgeStore } from './store.js';
 import { AgentCommand, BridgeMessage, SerializedComponentEntry } from './protocol.js';
+import { AgentLogger } from './logger.js';
 
 class AgentWebSocketManagerImpl {
   private ws: any = null;
@@ -121,6 +122,14 @@ class AgentWebSocketManagerImpl {
       document.body.classList.add('aui-agent-mode');
     }
 
+    // Connect the agent logger listener to stream errors
+    AgentLogger.setListener((entry) => {
+      this.send({
+        type: 'appLog',
+        entry,
+      });
+    });
+
     // Sync the registry updates
     this.unsubscribeStore = BridgeStore.subscribe(() => {
       this.syncRegistryAndSubscriptions();
@@ -135,6 +144,9 @@ class AgentWebSocketManagerImpl {
     if (typeof document !== 'undefined') {
       document.body.classList.remove('aui-agent-mode');
     }
+
+    // Detach the agent logger listener
+    AgentLogger.setListener(null);
 
     if (this.unsubscribeStore) {
       this.unsubscribeStore();
@@ -336,6 +348,16 @@ class AgentWebSocketManagerImpl {
     const registry = BridgeStore.getSnapshot();
 
     switch (command.type) {
+      case 'queryLedger': {
+        this.send({
+          type: 'ledgerSnapshot',
+          commandId: command.commandId,
+          ledger: AgentLogger.getLedger(),
+        });
+        this.send({ type: 'commandAck', commandId: command.commandId, success: true });
+        break;
+      }
+
       case 'getRegistry': {
         this.syncRegistryAndSubscriptions(true);
         this.send({ type: 'commandAck', commandId: command.commandId, success: true });
@@ -405,6 +427,13 @@ class AgentWebSocketManagerImpl {
       }
 
       case 'setState': {
+        AgentLogger.addEntry({
+          type: 'info',
+          source: 'agent',
+          message: `setState -> ${command.target} (value: ${typeof command.value === 'object' ? JSON.stringify(command.value) : String(command.value)})`,
+          timestamp: Date.now(),
+        });
+
         const lastDot = command.target.lastIndexOf('.');
         if (lastDot === -1) {
           this.send({
@@ -448,6 +477,13 @@ class AgentWebSocketManagerImpl {
       }
 
       case 'dispatchEvent': {
+        AgentLogger.addEntry({
+          type: 'info',
+          source: 'agent',
+          message: `dispatchEvent -> ${command.event} on ${command.target} (payload: ${typeof command.payload === 'object' ? JSON.stringify(command.payload) : String(command.payload)})`,
+          timestamp: Date.now(),
+        });
+
         const entry = registry.get(command.target);
         if (!entry || !entry.domRef) {
           this.send({

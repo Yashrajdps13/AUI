@@ -30,6 +30,17 @@ export interface SerializedComponentEntry {
 }
 
 /**
+ * Represents a single logged activity or error event.
+ */
+export interface AppLogEntry {
+  type: 'info' | 'warn' | 'error';
+  source: 'console' | 'runtime' | 'unhandledrejection' | 'agent';
+  message: string;
+  timestamp: number;
+  stack?: string;
+}
+
+/**
  * Commands received from the Agent (Agent -> Bridge).
  */
 export type AgentCommand =
@@ -38,7 +49,8 @@ export type AgentCommand =
   | { type: 'queryState'; commandId: string; target: string }
   | { type: 'getRegistry'; commandId: string }
   | { type: 'subscribe'; commandId: string; target: string }
-  | { type: 'unsubscribe'; commandId: string; target: string };
+  | { type: 'unsubscribe'; commandId: string; target: string }
+  | { type: 'queryLedger'; commandId: string };
 
 /**
  * Messages sent to the Agent (Bridge -> Agent).
@@ -47,4 +59,6 @@ export type BridgeMessage =
   | { type: 'registryDelta'; added: SerializedComponentEntry[]; removed: string[]; updated: SerializedComponentEntry[] }
   | { type: 'stateSnapshot'; target: string; value: unknown }
   | { type: 'commandAck'; commandId: string; success: boolean; error?: string }
-  | { type: 'renderSettled'; target: string };
+  | { type: 'renderSettled'; target: string }
+  | { type: 'appLog'; entry: AppLogEntry }
+  | { type: 'ledgerSnapshot'; commandId: string; ledger: AppLogEntry[] };
