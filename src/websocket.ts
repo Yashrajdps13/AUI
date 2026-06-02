@@ -480,36 +480,32 @@ class AgentWebSocketManagerImpl {
             }
 
             if (targetDom instanceof HTMLInputElement && targetDom.type === 'checkbox') {
-              const checkedSetter = Object.getOwnPropertyDescriptor(targetDom, 'checked')?.set;
-              const prototype = Object.getPrototypeOf(targetDom);
-              const prototypeCheckedSetter = Object.getOwnPropertyDescriptor(prototype, 'checked')?.set;
-
-              if (prototypeCheckedSetter && checkedSetter !== prototypeCheckedSetter) {
-                prototypeCheckedSetter.call(targetDom, Boolean(valueToSet));
-              } else if (checkedSetter) {
-                checkedSetter.call(targetDom, Boolean(valueToSet));
-              } else {
-                targetDom.checked = Boolean(valueToSet);
+              const currentChecked = targetDom.checked;
+              const desiredChecked = Boolean(valueToSet);
+              if (currentChecked !== desiredChecked) {
+                targetDom.click();
               }
-            } else if ('value' in targetDom) {
-              const valueSetter = Object.getOwnPropertyDescriptor(targetDom, 'value')?.set;
-              const prototype = Object.getPrototypeOf(targetDom);
-              const prototypeValueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+            } else {
+              if ('value' in targetDom) {
+                const valueSetter = Object.getOwnPropertyDescriptor(targetDom, 'value')?.set;
+                const prototype = Object.getPrototypeOf(targetDom);
+                const prototypeValueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
 
-              if (prototypeValueSetter && valueSetter !== prototypeValueSetter) {
-                prototypeValueSetter.call(targetDom, valueToSet);
-              } else if (valueSetter) {
-                valueSetter.call(targetDom, valueToSet);
-              } else {
-                (targetDom as any).value = valueToSet;
+                if (prototypeValueSetter && valueSetter !== prototypeValueSetter) {
+                  prototypeValueSetter.call(targetDom, valueToSet);
+                } else if (valueSetter) {
+                  valueSetter.call(targetDom, valueToSet);
+                } else {
+                  (targetDom as any).value = valueToSet;
+                }
               }
+
+              const inputEv = new Event('input', { bubbles: true });
+              targetDom.dispatchEvent(inputEv);
+
+              const changeEv = new Event('change', { bubbles: true });
+              targetDom.dispatchEvent(changeEv);
             }
-
-            const inputEv = new Event('input', { bubbles: true });
-            targetDom.dispatchEvent(inputEv);
-
-            const changeEv = new Event('change', { bubbles: true });
-            targetDom.dispatchEvent(changeEv);
           } else {
             throw new Error(`Unsupported event type "${command.event}"`);
           }
