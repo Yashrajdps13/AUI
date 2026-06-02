@@ -278,7 +278,7 @@ CRITICAL RULES:
 - Inspect the description comment of each state slot to determine which inputs correspond to user request details (e.g. username, password, tier).
 - When clicking buttons, checkboxes, or plan cards, locate the element in the component's `interactiveElements` metadata. Use the exact `selector` (e.g. "#btn-next-step-1" or "#btn-tier-premium" or "#btn-submit-wizard") as the `payload` for `dispatchEvent` click.
 - Only interact with interactive elements that are `visible: true` and NOT `disabled: true`.
-- If the user's goal has been fully accomplished (e.g. the registration success screen is visible, showing the registration is complete, and no more steps/inputs are required), respond with the word: DONE.
+- If the user's specific goal/request has been fully accomplished (e.g. the specific fields/inputs they asked for have been successfully set, or the specific buttons they wanted clicked have been clicked), respond with the word: DONE. Do NOT perform any additional unsolicited actions or navigate to subsequent steps unless the user explicitly requested it in the query.
 - Otherwise, plan the next single command or small sequence of commands to execute.
 - Respond ONLY with the JSON array of commands or the single word DONE. No markdown blocks, formatting, or extra text.
 
@@ -315,7 +315,7 @@ DONE
             return
 
         if not isinstance(commands, list) or len(commands) == 0:
-            print(f"[Error] No valid commands planned. Response: {content}")
+            print("\n[Done] No further commands planned. Returning to query mode.")
             return
 
         for cmd in commands:
