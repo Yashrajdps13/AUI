@@ -30,28 +30,37 @@ function ProductCard({ prod, onAdd }) {
  * Auto-registered in the bridge, allowing targeted edits and events.
  */
 function CartItem({ item, onUpdate }) {
+  if (!item || typeof item !== 'object') return null;
+  const emoji = item.emoji || '📦';
+  const name = item.name || 'Product';
+  const price = typeof item.price === 'number' ? item.price : 0;
+  const quantity = item.quantity || 0;
+  const itemId = item.id || '';
+
   return (
     <div className="cart-item">
       <div className="item-details">
-        <span className="item-emoji">{item.emoji}</span>
+        <span className="item-emoji">{emoji}</span>
         <div>
-          <div className="item-name">{item.name}</div>
-          <div className="item-price">${item.price.toFixed(2)}</div>
+          <div className="item-name">{name}</div>
+          <div className="item-price">${price.toFixed(2)}</div>
         </div>
       </div>
       <div className="quantity-control">
         <button
           className="qty-btn"
-          onClick={() => onUpdate(item.id, -1)}
-          id={`btn-minus-${item.id}`}
+          onClick={() => onUpdate(itemId, -1)}
+          id={`btn-minus-${itemId}`}
+          disabled={!itemId}
         >
           -
         </button>
-        <span>{item.quantity}</span>
+        <span>{quantity}</span>
         <button
           className="qty-btn"
-          onClick={() => onUpdate(item.id, 1)}
-          id={`btn-plus-${item.id}`}
+          onClick={() => onUpdate(itemId, 1)}
+          id={`btn-plus-${itemId}`}
+          disabled={!itemId}
         >
           +
         </button>
@@ -96,7 +105,11 @@ export default function App() {
   };
 
   // Pricing calculations
-  const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const subtotal = cart.reduce((sum, item) => {
+    const price = item && typeof item.price === 'number' ? item.price : 0;
+    const qty = item && typeof item.quantity === 'number' ? item.quantity : 0;
+    return sum + price * qty;
+  }, 0);
   const discount = isCouponApplied ? subtotal * 0.1 : 0;
   const total = subtotal - discount;
 
@@ -412,8 +425,12 @@ export default function App() {
               {cart.length === 0 ? (
                 <div className="empty-cart-msg">Your cart is empty. Click products to add.</div>
               ) : (
-                cart.map((item) => (
-                  <CartItem key={item.id} item={item} onUpdate={updateQuantity} />
+                cart.map((item, idx) => (
+                  <CartItem
+                    key={item && item.id ? item.id : `item-${idx}`}
+                    item={item}
+                    onUpdate={updateQuantity}
+                  />
                 ))
               )}
             </div>

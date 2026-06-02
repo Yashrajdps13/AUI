@@ -149,7 +149,7 @@ def get_llm_planner_node():
         from langchain_google_genai import ChatGoogleGenerativeAI
         from langchain_core.messages import SystemMessage, HumanMessage
         
-        llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
+        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
 
         def plan_node(state: AgentState) -> Dict[str, Any]:
             registry_str = json.dumps(state["registry"], indent=2)
@@ -173,6 +173,13 @@ Available commands:
    {{"type": "setState", "commandId": "unique-id", "target": "ComponentID.stateKey", "value": val}}
 2. DOM interactions (events):
    {{"type": "dispatchEvent", "commandId": "unique-id", "target": "ComponentID", "event": "click" | "focus" | "change", "payload": "selector-string-or-value"}}
+
+CRITICAL RULES FOR COMMAND SELECTION:
+- ALWAYS prefer `dispatchEvent` click commands for UI-based actions (such as adding products, navigating steps, clicking buttons, or applying coupons).
+  - Example: To add an organic apple, DO NOT set the `cart` state directly. Instead, click the button using a dispatchEvent with target "App#...", event "click", and payload "#btn-prod-apple".
+  - Example: To click checkout, click the button using a dispatchEvent with target "App#...", event "click", and payload "#btn-go-to-checkout".
+- ONLY use `setState` for simple user inputs/text fields (like `fullName`, `email`, `coupon`) that are typically modified by typing.
+- NEVER use `setState` to write directly to complex state structures like lists or objects (e.g. `cart`) as that bypasses application logic and triggers crashes.
 
 Note: If you want to click a button inside a component (e.g. App component), send a dispatchEvent to that component and specify its selector in the payload.
 Example: to click "#btn-prod-apple" inside "App#_r_0_", use target: "App#_r_0_", event: "click", payload: "#btn-prod-apple".
@@ -345,7 +352,7 @@ async def cli_loop():
     print("\n=======================================================")
     print("react-agent-bridge LangGraph CLI Controller")
     if has_llm_credentials():
-        print("Model Mode: Gemini 1.5 Flash LLM Planner active.")
+        print("Model Mode: Gemini 2.5 Flash LLM Planner active.")
     else:
         print("Model Mode: Local Rule-based Planner active (No Gemini key found).")
     print("Commands available: add apple, set name to Alice, checkout, etc.")
