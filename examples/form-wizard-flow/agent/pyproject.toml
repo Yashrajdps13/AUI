@@ -1,0 +1,11 @@
+[project]
+name = "wizard-agent"
+version = "0.1.0"
+description = "Rule-based/CLI Agent Backend for AUI Form Wizard example"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "websockets>=12.0",
+    "python-dotenv>=1.0.1",
+    "pydantic>=2.7.0"
+]

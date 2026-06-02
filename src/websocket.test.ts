@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { WebSocketServer } from 'ws';
 import WebSocket from 'ws';
@@ -178,5 +179,94 @@ describe('AgentWebSocketManager', () => {
     });
 
     expect(mockSetter).toHaveBeenCalledWith(false);
+  });
+
+  it('should extract interactiveElements with disabled and visible properties, and send renderSettled', async () => {
+    messagesReceived.length = 0;
+    
+    const container = document.createElement('div');
+    container.id = 'container-root';
+    
+    const activeBtn = document.createElement('button');
+    activeBtn.id = 'btn-active';
+    activeBtn.innerText = 'Click me';
+    
+    const disabledBtn = document.createElement('button');
+    disabledBtn.id = 'btn-disabled';
+    disabledBtn.disabled = true;
+    disabledBtn.innerText = 'Disabled';
+    
+    const hiddenDiv = document.createElement('div');
+    hiddenDiv.style.display = 'none';
+    
+    const hiddenBtn = document.createElement('button');
+    hiddenBtn.id = 'btn-hidden';
+    hiddenBtn.innerText = 'Hidden';
+    
+    hiddenDiv.appendChild(hiddenBtn);
+    container.appendChild(activeBtn);
+    container.appendChild(disabledBtn);
+    container.appendChild(hiddenDiv);
+    
+    document.body.appendChild(container);
+    
+    BridgeStore.registerComponent('App#123', {
+      displayName: 'App',
+      fiberRef: null,
+      domRef: container,
+      stateSlots: [],
+      mountedAt: Date.now(),
+      route: '/'
+    });
+    
+    (AgentWebSocketManager as any).syncRegistryAndSubscriptions(true);
+    
+    await new Promise<void>((resolve) => {
+      const check = () => {
+        const deltaMsg = messagesReceived.find((m) => m.type === 'registryDelta');
+        if (deltaMsg) resolve();
+        else setTimeout(check, 50);
+      };
+      check();
+    });
+    
+    const delta = messagesReceived.find((m) => m.type === 'registryDelta');
+    expect(delta).toBeDefined();
+    
+    const appComp = delta.added.find((c: any) => c.id === 'App#123');
+    expect(appComp).toBeDefined();
+    expect(appComp.interactiveElements).toBeDefined();
+    
+    const activeEl = appComp.interactiveElements.find((el: any) => el.id === 'btn-active');
+    expect(activeEl).toBeDefined();
+    expect(activeEl.disabled).toBeUndefined();
+    expect(activeEl.visible).toBe(true);
+    
+    const disabledEl = appComp.interactiveElements.find((el: any) => el.id === 'btn-disabled');
+    expect(disabledEl).toBeDefined();
+    expect(disabledEl.disabled).toBe(true);
+    
+    const hiddenEl = appComp.interactiveElements.find((el: any) => el.id === 'btn-hidden');
+    expect(hiddenEl).toBeDefined();
+    expect(hiddenEl.visible).toBe(false);
+    
+    messagesReceived.length = 0;
+    AgentWebSocketManager.onRenderSettled('container-root');
+    
+    await new Promise<void>((resolve) => {
+      const check = () => {
+        const settledMsg = messagesReceived.find((m) => m.type === 'renderSettled');
+        if (settledMsg) resolve();
+        else setTimeout(check, 50);
+      };
+      check();
+    });
+
+    expect(messagesReceived[0]).toEqual({
+      type: 'renderSettled',
+      target: 'container-root'
+    });
+    
+    document.body.removeChild(container);
   });
 });

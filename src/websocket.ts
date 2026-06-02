@@ -105,6 +105,16 @@ class AgentWebSocketManagerImpl {
     }
   }
 
+  /**
+   * Called by the scanner when React commits a render and scan is complete.
+   */
+  onRenderSettled(targetId: string): void {
+    this.send({
+      type: 'renderSettled',
+      target: targetId,
+    });
+  }
+
   private onConnected(): void {
     // Sync the registry updates
     this.unsubscribeStore = BridgeStore.subscribe(() => {
@@ -150,6 +160,8 @@ class AgentWebSocketManagerImpl {
     text?: string;
     id?: string;
     placeholder?: string;
+    disabled?: boolean;
+    visible?: boolean;
   }[] {
     if (!dom || typeof window === 'undefined') return [];
     const list: any[] = [];
@@ -157,6 +169,27 @@ class AgentWebSocketManagerImpl {
       const elements = dom.querySelectorAll('button, a, input, select, textarea, [id], [role="button"]');
       const allElements = [dom, ...Array.from(elements)];
       const seenSelectors = new Set<string>();
+
+      const isElementVisible = (element: HTMLElement): boolean => {
+        if (!element.ownerDocument || !element.ownerDocument.defaultView) return true;
+        try {
+          const style = element.ownerDocument.defaultView.getComputedStyle(element);
+          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+            return false;
+          }
+          let parent: HTMLElement | null = element.parentElement;
+          while (parent && parent !== dom) {
+            const parentStyle = element.ownerDocument.defaultView.getComputedStyle(parent);
+            if (parentStyle.display === 'none' || parentStyle.visibility === 'hidden') {
+              return false;
+            }
+            parent = parent.parentElement;
+          }
+        } catch {
+          // Computed styles lookup might fail in environments without defaultView
+        }
+        return true;
+      };
 
       for (const el of allElements) {
         if (!(el instanceof HTMLElement)) continue;
@@ -188,6 +221,8 @@ class AgentWebSocketManagerImpl {
 
         const text = el.innerText ? el.innerText.trim().substring(0, 100) : '';
         const placeholder = el.getAttribute('placeholder') || undefined;
+        const disabled = (el as any).disabled === true || el.getAttribute('aria-disabled') === 'true' || el.hasAttribute('disabled');
+        const visible = isElementVisible(el);
 
         list.push({
           selector,
@@ -195,6 +230,8 @@ class AgentWebSocketManagerImpl {
           text: text || undefined,
           id: el.id || undefined,
           placeholder: placeholder || undefined,
+          disabled: disabled || undefined,
+          visible,
         });
       }
     } catch (err) {

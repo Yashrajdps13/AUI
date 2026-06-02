@@ -23,6 +23,8 @@ export interface SerializedComponentEntry {
     text?: string;
     id?: string;
     placeholder?: string;
+    disabled?: boolean;
+    visible?: boolean;
   }[];
 }
 

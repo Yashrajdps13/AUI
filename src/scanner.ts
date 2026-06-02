@@ -1,4 +1,5 @@
 import { BridgeStore } from './store.js';
+import { AgentWebSocketManager } from './websocket.js';
 
 /**
  * Traverses up the type structure of a Fiber node to resolve its readable name.
@@ -118,6 +119,9 @@ function patchRenderer(_renderer: any): void {
     if (root && root.current) {
       const route = typeof window !== 'undefined' ? window.location.pathname : null;
       scanFiberTree(root.current, route);
+      
+      const targetId = root.containerInfo?.id || 'root';
+      AgentWebSocketManager.onRenderSettled(targetId);
     }
   };
 }
