@@ -5,6 +5,7 @@ export { useBridgeState, BridgeStateMetadata } from './hook.js';
 export { initFiberScanner } from './scanner.js';
 export { AgentWebSocketManager } from './websocket.js';
 export { AgentLogger } from './logger.js';
+export { bridgeZustand, BridgeZustandOptions } from './zustand.js';
 
 import { initFiberScanner } from './scanner.js';
 import { AgentLogger } from './logger.js';

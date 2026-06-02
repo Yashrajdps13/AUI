@@ -392,4 +392,41 @@ describe('AgentWebSocketManager', () => {
     
     document.body.removeChild(container);
   });
+
+  it('should handle callAction command and execute store actions', async () => {
+    messagesReceived.length = 0;
+    const actionSpy = vi.fn();
+    
+    BridgeStore.registerComponent('ZustandStore#Auth', {
+      displayName: 'ZustandStore#Auth',
+      fiberRef: null,
+      domRef: null,
+      stateSlots: [],
+      mountedAt: Date.now(),
+      route: '/',
+      actions: {
+        login: actionSpy,
+      },
+    });
+
+    serverSocket.send(JSON.stringify({
+      type: 'callAction',
+      commandId: 'cmd-call-1',
+      target: 'Auth.login',
+      args: ['user123', 'pass123'],
+    }));
+
+    await new Promise<void>((resolve) => {
+      const check = () => {
+        const ack = messagesReceived.find((m) => m.type === 'commandAck' && m.commandId === 'cmd-call-1');
+        if (ack) resolve();
+        else setTimeout(check, 50);
+      };
+      check();
+    });
+
+    expect(actionSpy).toHaveBeenCalledWith('user123', 'pass123');
+    const ack = messagesReceived.find((m) => m.type === 'commandAck' && m.commandId === 'cmd-call-1');
+    expect(ack.success).toBe(true);
+  });
 });

@@ -287,6 +287,7 @@ class AgentWebSocketManagerImpl {
           sensitive: s.sensitive,
         })),
         interactiveElements: this.getInteractiveElements(entry.domRef),
+        actions: entry.actions ? Object.keys(entry.actions) : undefined,
       };
 
       const serializedStr = JSON.stringify(serialized);
@@ -571,6 +572,85 @@ class AgentWebSocketManagerImpl {
             commandId: command.commandId,
             success: false,
             error: `Failed to dispatch event: ${err.message || err}`,
+          });
+        }
+        break;
+      }
+
+      case 'callAction': {
+        const lastDot = command.target.lastIndexOf('.');
+        if (lastDot === -1) {
+          this.send({
+            type: 'commandAck',
+            commandId: command.commandId,
+            success: false,
+            error: 'Invalid target format. Expected "StoreName.actionName" or "ZustandStore#StoreName.actionName".',
+          });
+          return;
+        }
+
+        const rawStoreName = command.target.substring(0, lastDot);
+        const actionName = command.target.substring(lastDot + 1);
+
+        let componentId = rawStoreName;
+        if (!componentId.startsWith('ZustandStore#') && registry.has(`ZustandStore#${componentId}`)) {
+          componentId = `ZustandStore#${componentId}`;
+        }
+
+        const entry = registry.get(componentId);
+        if (!entry) {
+          this.send({
+            type: 'commandAck',
+            commandId: command.commandId,
+            success: false,
+            error: `Store/Component "${componentId}" not found in registry.`,
+          });
+          return;
+        }
+
+        const actionFn = entry.actions?.[actionName];
+        if (typeof actionFn !== 'function') {
+          this.send({
+            type: 'commandAck',
+            commandId: command.commandId,
+            success: false,
+            error: `Action "${actionName}" not found or is not a function in "${componentId}".`,
+          });
+          return;
+        }
+
+        AgentLogger.addEntry({
+          type: 'info',
+          source: 'agent',
+          message: `callAction -> ${command.target} (args: ${JSON.stringify(command.args)})`,
+          timestamp: Date.now(),
+        });
+
+        try {
+          const result = actionFn(...command.args);
+          if (result instanceof Promise) {
+            result.then(
+              () => {
+                this.send({ type: 'commandAck', commandId: command.commandId, success: true });
+              },
+              (err: any) => {
+                this.send({
+                  type: 'commandAck',
+                  commandId: command.commandId,
+                  success: false,
+                  error: `Async action failed: ${err.message || err}`,
+                });
+              }
+            );
+          } else {
+            this.send({ type: 'commandAck', commandId: command.commandId, success: true });
+          }
+        } catch (err: any) {
+          this.send({
+            type: 'commandAck',
+            commandId: command.commandId,
+            success: false,
+            error: `Action invocation failed: ${err.message || err}`,
           });
         }
         break;

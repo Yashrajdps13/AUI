@@ -28,6 +28,7 @@ export interface SerializedComponentEntry {
     disabled?: boolean;
     visible?: boolean;
   }[];
+  actions?: string[];
 }
 
 /**
@@ -51,7 +52,8 @@ export type AgentCommand =
   | { type: 'getRegistry'; commandId: string }
   | { type: 'subscribe'; commandId: string; target: string }
   | { type: 'unsubscribe'; commandId: string; target: string }
-  | { type: 'queryLedger'; commandId: string };
+  | { type: 'queryLedger'; commandId: string }
+  | { type: 'callAction'; commandId: string; target: string; args: unknown[] };
 
 /**
  * Messages sent to the Agent (Bridge -> Agent).

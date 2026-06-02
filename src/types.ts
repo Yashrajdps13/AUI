@@ -38,6 +38,7 @@ export interface ComponentEntry {
   stateSlots: StateSlot[];        // Linked hook state slots
   mountedAt: number;              // Timestamp when first mounted/registered
   route: string | null;           // Scoped route or URL path where mounted
+  actions?: Record<string, Function>; // Map of callable store actions
 }
 
 /**
