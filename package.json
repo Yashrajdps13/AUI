@@ -9,6 +9,14 @@
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
+    },
+    "./preflight": {
+      "import": "./dist/preflight.js",
+      "types": "./dist/preflight.d.ts"
+    },
+    "./babel-plugin": {
+      "import": "./dist/babel-plugin.js",
+      "types": "./dist/babel-plugin.d.ts"
     }
   },
   "scripts": {
