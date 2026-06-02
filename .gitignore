@@ -1,22 +1,20 @@
-# Node
-node_modules/
-dist/
+# Dependency folders
+**/node_modules/
+**/venv/
 
-# Examples build outputs
-examples/frontend/dist/
-examples/frontend/node_modules/
+# Build folders
+**/dist/
 
-# Python Virtual Environment and caches
-examples/agent/venv/
-__pycache__/
+# Python caching
+**/__pycache__/
 *.pyc
 
 # Local env files
-.env
-.env.local
+**/.env
+**/.env.local
 
 # IDE / OS files
-.vscode/
-.idea/
+**/.vscode/
+**/.idea/
 .DS_Store
 Thumbs.db
