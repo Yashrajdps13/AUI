@@ -480,9 +480,29 @@ class AgentWebSocketManagerImpl {
             }
 
             if (targetDom instanceof HTMLInputElement && targetDom.type === 'checkbox') {
-              targetDom.checked = Boolean(valueToSet);
+              const checkedSetter = Object.getOwnPropertyDescriptor(targetDom, 'checked')?.set;
+              const prototype = Object.getPrototypeOf(targetDom);
+              const prototypeCheckedSetter = Object.getOwnPropertyDescriptor(prototype, 'checked')?.set;
+
+              if (prototypeCheckedSetter && checkedSetter !== prototypeCheckedSetter) {
+                prototypeCheckedSetter.call(targetDom, Boolean(valueToSet));
+              } else if (checkedSetter) {
+                checkedSetter.call(targetDom, Boolean(valueToSet));
+              } else {
+                targetDom.checked = Boolean(valueToSet);
+              }
             } else if ('value' in targetDom) {
-              (targetDom as any).value = valueToSet;
+              const valueSetter = Object.getOwnPropertyDescriptor(targetDom, 'value')?.set;
+              const prototype = Object.getPrototypeOf(targetDom);
+              const prototypeValueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+
+              if (prototypeValueSetter && valueSetter !== prototypeValueSetter) {
+                prototypeValueSetter.call(targetDom, valueToSet);
+              } else if (valueSetter) {
+                valueSetter.call(targetDom, valueToSet);
+              } else {
+                (targetDom as any).value = valueToSet;
+              }
             }
 
             const inputEv = new Event('input', { bubbles: true });
