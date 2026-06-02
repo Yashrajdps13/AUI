@@ -22,3 +22,8 @@ We adhere to **Semantic Versioning (SemVer)**: `MAJOR.MINOR.PATCH` (e.g., `0.1.0
 - Increment **MAJOR** for any backward-incompatible API or protocol changes.
 - Increment **MINOR** for backward-compatible new functionality or features.
 - Increment **PATCH** for backward-compatible bug fixes.
+
+---
+
+## Code Pushing Constraints
+- **NEVER** push code to remote repositories (e.g., via `git push`) unless the user has explicitly tested the example project and approved pushing the code in the chat. You may compile, run tests, and create local commits, but keep them local until explicit user verification and approval.
