@@ -3,6 +3,12 @@ import { BridgeStore } from './store.js';
 import { AgentCommand, BridgeMessage, SerializedComponentEntry } from './protocol.js';
 import { AgentLogger } from './logger.js';
 
+export interface WriteSecurityScope {
+  allowedTargets?: string[];
+  allowedActions?: string[];
+  allowedRoutes?: string[];
+}
+
 class AgentWebSocketManagerImpl {
   private ws: any = null;
   private url: string | null = null;
@@ -30,15 +36,18 @@ class AgentWebSocketManagerImpl {
     timeoutTimer: any;
   }> = new Map();
 
+  private writeScope?: WriteSecurityScope = undefined;
+
   // Allow overriding WebSocket class (for Node.js testing environments)
   public WebSocketClass: any = typeof WebSocket !== 'undefined' ? WebSocket : null;
 
   /**
    * Connects to the agent backend WebSocket.
    */
-  connect(url: string): void {
+  connect(url: string, options?: { writeScope?: WriteSecurityScope }): void {
     this.url = url;
     this.isDisconnecting = false;
+    this.writeScope = options?.writeScope;
 
     const WS = this.WebSocketClass || (typeof globalThis !== 'undefined' ? (globalThis as any).WebSocket : null);
     if (!WS) {
@@ -54,20 +63,26 @@ class AgentWebSocketManagerImpl {
       return;
     }
 
+    const socket = this.ws;
     this.ws.onopen = () => {
+      if (this.ws !== socket) return;
       this.reconnectDelay = 1000; // Reset backoff
       this.onConnected();
     };
 
     this.ws.onclose = () => {
-      this.onDisconnected();
+      if (this.ws === socket) {
+        this.onDisconnected();
+      }
     };
 
     this.ws.onerror = (err: any) => {
+      if (this.ws !== socket) return;
       console.error('Bridge WebSocket error:', err);
     };
 
     this.ws.onmessage = (event: any) => {
+      if (this.ws !== socket) return;
       try {
         const command: AgentCommand = JSON.parse(event.data);
         this.handleCommand(command);
@@ -274,6 +289,96 @@ class AgentWebSocketManagerImpl {
       console.error('Error scanning interactive elements:', err);
     }
     return list;
+  }
+
+  private isWriteAllowed(target: string, type: 'state' | 'event' | 'action'): { allowed: boolean; error?: string } {
+    if (!this.writeScope) {
+      return { allowed: true };
+    }
+
+    // 1. Route validation
+    if (this.writeScope.allowedRoutes && typeof window !== 'undefined') {
+      const currentRoute = window.location.pathname;
+      const isRouteAllowed = this.writeScope.allowedRoutes.some((route) => {
+        return currentRoute === route || currentRoute.startsWith(route);
+      });
+      if (!isRouteAllowed) {
+        return {
+          allowed: false,
+          error: `Write operation on route "${currentRoute}" is not allowed under the current security scope.`,
+        };
+      }
+    }
+
+    // 2. Target ID and action validation
+    if (type === 'action') {
+      const lastDot = target.lastIndexOf('.');
+      if (lastDot === -1) {
+        return { allowed: false, error: `Invalid action target format: "${target}".` };
+      }
+      const rawStoreName = target.substring(0, lastDot);
+
+      if (this.writeScope.allowedActions) {
+        const matchesAction = this.writeScope.allowedActions.some((allowed) => {
+          return allowed === target || allowed === `ZustandStore#${target}` || `ZustandStore#${allowed}` === target;
+        });
+        if (!matchesAction) {
+          return {
+            allowed: false,
+            error: `Action "${target}" is not allowed under the current security scope.`,
+          };
+        }
+      }
+
+      if (this.writeScope.allowedTargets) {
+        let componentId = rawStoreName;
+        const matchesTarget = this.writeScope.allowedTargets.some((allowed) => {
+          return (
+            allowed === componentId ||
+            allowed === `ZustandStore#${componentId}` ||
+            `ZustandStore#${allowed}` === componentId
+          );
+        });
+        if (!matchesTarget) {
+          return {
+            allowed: false,
+            error: `Store "${componentId}" is not allowed under the current security scope.`,
+          };
+        }
+      }
+    } else {
+      let componentId = target;
+      if (type === 'state') {
+        const lastDot = target.lastIndexOf('.');
+        if (lastDot !== -1) {
+          componentId = target.substring(0, lastDot);
+        }
+      }
+
+      if (this.writeScope.allowedTargets) {
+        const registry = BridgeStore.getSnapshot();
+        const entry = registry.get(componentId);
+        const displayName = entry?.displayName;
+
+        const matchesTarget = this.writeScope.allowedTargets.some((allowed) => {
+          return (
+            allowed === componentId ||
+            (displayName && allowed === displayName) ||
+            allowed === `ZustandStore#${componentId}` ||
+            `ZustandStore#${allowed}` === componentId
+          );
+        });
+
+        if (!matchesTarget) {
+          return {
+            allowed: false,
+            error: `Target "${componentId}" is not allowed under the current security scope.`,
+          };
+        }
+      }
+    }
+
+    return { allowed: true };
   }
 
   private getTargetValue(target: string): { found: boolean; value?: unknown } {
@@ -503,6 +608,23 @@ class AgentWebSocketManagerImpl {
       }
 
       case 'setState': {
+        const securityCheck = this.isWriteAllowed(command.target, 'state');
+        if (!securityCheck.allowed) {
+          AgentLogger.addEntry({
+            type: 'warn',
+            source: 'agent',
+            message: `Blocked setState -> ${command.target}: ${securityCheck.error}`,
+            timestamp: Date.now(),
+          });
+          this.send({
+            type: 'commandAck',
+            commandId: command.commandId,
+            success: false,
+            error: securityCheck.error,
+          });
+          return;
+        }
+
         const lastDot = command.target.lastIndexOf('.');
         if (lastDot === -1) {
           this.send({
@@ -556,6 +678,23 @@ class AgentWebSocketManagerImpl {
       }
 
       case 'dispatchEvent': {
+        const securityCheck = this.isWriteAllowed(command.target, 'event');
+        if (!securityCheck.allowed) {
+          AgentLogger.addEntry({
+            type: 'warn',
+            source: 'agent',
+            message: `Blocked dispatchEvent -> ${command.event} on ${command.target}: ${securityCheck.error}`,
+            timestamp: Date.now(),
+          });
+          this.send({
+            type: 'commandAck',
+            commandId: command.commandId,
+            success: false,
+            error: securityCheck.error,
+          });
+          return;
+        }
+
         AgentLogger.addEntry({
           type: 'info',
           source: 'agent',
@@ -649,6 +788,23 @@ class AgentWebSocketManagerImpl {
       }
 
       case 'callAction': {
+        const securityCheck = this.isWriteAllowed(command.target, 'action');
+        if (!securityCheck.allowed) {
+          AgentLogger.addEntry({
+            type: 'warn',
+            source: 'agent',
+            message: `Blocked callAction -> ${command.target}: ${securityCheck.error}`,
+            timestamp: Date.now(),
+          });
+          this.send({
+            type: 'commandAck',
+            commandId: command.commandId,
+            success: false,
+            error: securityCheck.error,
+          });
+          return;
+        }
+
         const lastDot = command.target.lastIndexOf('.');
         if (lastDot === -1) {
           this.send({

@@ -3,7 +3,7 @@ export * from './protocol.js';
 export { BridgeStore, useBridgeRegistry, useIsAgentConnected } from './store.js';
 export { useBridgeState, BridgeStateMetadata } from './hook.js';
 export { initFiberScanner } from './scanner.js';
-export { AgentWebSocketManager } from './websocket.js';
+export { AgentWebSocketManager, WriteSecurityScope } from './websocket.js';
 export { AgentLogger } from './logger.js';
 export { bridgeZustand, BridgeZustandOptions } from './zustand.js';
 
