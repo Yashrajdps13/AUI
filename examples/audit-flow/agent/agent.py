@@ -1,19 +1,13 @@
 import asyncio
 import json
-import os
 import sys
 from datetime import datetime
-from typing import Dict, Any, List, Optional
-from dotenv import load_dotenv
-
-# Load local environment variables
-load_dotenv()
+from typing import Dict, Any, Optional
 
 # Global connection reference and latest registry cache
 ACTIVE_CONNECTION = None
 LATEST_REGISTRY: Dict[str, Any] = {}
 COMMAND_FUTURE: Optional[asyncio.Future] = None
-LEDGER_FUTURE: Optional[asyncio.Future] = None
 AUDIT_FUTURE: Optional[asyncio.Future] = None
 
 # Terminal text colors
@@ -34,10 +28,10 @@ async def execute_command(cmd: Dict[str, Any]) -> bool:
     await ACTIVE_CONNECTION.send(json.dumps(cmd))
     
     try:
-        ack = await asyncio.wait_for(COMMAND_FUTURE, timeout=3.0)
+        ack = await asyncio.wait_for(COMMAND_FUTURE, timeout=5.0)
         success = ack.get("success", False)
         if not success:
-            print(f"{RED}[Blocked/Failed] {ack.get('error', 'Unknown error')}{RESET}")
+            print(f"{RED}[Failed] {ack.get('error', 'Unknown error')}{RESET}")
         return success
     except asyncio.TimeoutError:
         print(f"{RED}[Error] Command timed out waiting for Ack.{RESET}")
@@ -51,7 +45,7 @@ async def execute_command(cmd: Dict[str, Any]) -> bool:
 import websockets
 
 async def handle_ws(websocket):
-    global ACTIVE_CONNECTION, LATEST_REGISTRY, COMMAND_FUTURE, LEDGER_FUTURE, AUDIT_FUTURE
+    global ACTIVE_CONNECTION, LATEST_REGISTRY, COMMAND_FUTURE, AUDIT_FUTURE
     print(f"\n{GREEN}[Bridge Connected] React application successfully linked!{RESET}")
     ACTIVE_CONNECTION = websocket
 
@@ -78,19 +72,6 @@ async def handle_ws(websocket):
                 if COMMAND_FUTURE and not COMMAND_FUTURE.done():
                     COMMAND_FUTURE.set_result(data)
 
-            elif msg_type == "appLog":
-                entry = data.get("entry", {})
-                t_str = datetime.fromtimestamp(entry.get("timestamp", 0) / 1000).strftime('%H:%M:%S')
-                msg_color = RED if entry.get("type") == "error" else (YELLOW if entry.get("type") == "warn" else GREEN)
-                print(f"\n{msg_color}[STREAMED LOG] [{t_str}] [Source: {entry.get('source')}] {entry.get('message')}{RESET}")
-                if entry.get("stack"):
-                    print(f"{msg_color}{entry.get('stack')}{RESET}")
-                print("Agent Query > ", end="", flush=True)
-
-            elif msg_type == "ledgerSnapshot":
-                if LEDGER_FUTURE and not LEDGER_FUTURE.done():
-                    LEDGER_FUTURE.set_result(data)
-            
             elif msg_type == "auditLogSnapshot":
                 if AUDIT_FUTURE and not AUDIT_FUTURE.done():
                     AUDIT_FUTURE.set_result(data)
@@ -112,15 +93,15 @@ async def start_server():
 # INTERACTIVE CLI LOOP
 # ==========================================
 async def cli_loop():
-    global LEDGER_FUTURE, AUDIT_FUTURE
+    global AUDIT_FUTURE
     print(f"\n=======================================================")
-    print(f"{CYAN}AUI Write-Side Security Scoping Playground{RESET}")
+    print(f"{CYAN}AUI Command Audit Log Playground Agent{RESET}")
     print("Commands:")
     print("  registry    - Print the active component registry schema")
-    print("  ledger      - Query the circular log ledger from the browser")
     print("  audit       - Query the append-only command audit log from the browser")
-    print("  fill        - Set email and notes on FormComponent (Allowed Targets)")
-    print("  escalate    - Attempt to toggle admin or click escalate on AdminPanel (Blocked Target)")
+    print("  fill        - Set username and SSN on App (SSN should be redacted)")
+    print("  login       - Call Zustand store login action (Arguments should be redacted)")
+    print("  click       - Dispatch click event on submit button")
     print("  exit / quit - Shutdown agent")
     print(f"=======================================================\n")
 
@@ -140,13 +121,10 @@ async def cli_loop():
             print(f"{RED}Error: No React client connected. Please open the frontend in your browser.{RESET}")
             continue
 
-        form_id = None
-        admin_id = None
+        app_id = None
         for cid in LATEST_REGISTRY.keys():
-            if cid.startswith("FormComponent#"):
-                form_id = cid
-            elif cid.startswith("AdminPanel#"):
-                admin_id = cid
+          if cid.startswith("App#") or cid.startswith("App:"):
+            app_id = cid
 
         if cmd_name == "registry":
             print(f"\n{CYAN}--- Active Bridge Registry ---{RESET}")
@@ -157,32 +135,11 @@ async def cli_loop():
                 for slot in comp.get("stateSlots", []):
                     sensitive_flag = f" {RED}[SENSITIVE]{RESET}" if slot.get("sensitive") else ""
                     print(f"    - {slot.get('key')} (hookIndex: {slot.get('hookIndex')}){sensitive_flag}")
+                if comp.get("actions"):
+                  print(f"  Actions:")
+                  for action in comp.get("actions", []):
+                    print(f"    - {action}")
             print(f"{CYAN}------------------------------{RESET}\n")
-
-        elif cmd_name == "ledger":
-            LEDGER_FUTURE = asyncio.get_running_loop().create_future()
-            await ACTIVE_CONNECTION.send(json.dumps({
-                "type": "queryLedger",
-                "commandId": "get-ledger-snapshot"
-            }))
-            
-            try:
-                snapshot = await asyncio.wait_for(LEDGER_FUTURE, timeout=3.0)
-                ledger = snapshot.get("ledger", [])
-                print(f"\n{CYAN}--- Circular Log Ledger Snapshot (Browser Flight Recorder) ---{RESET}")
-                if not ledger:
-                    print("Ledger is empty.")
-                else:
-                    for i, log in enumerate(ledger):
-                        t = datetime.fromtimestamp(log.get("timestamp", 0) / 1000).strftime('%H:%M:%S')
-                        log_type = log.get("type").upper()
-                        color = RED if log_type == "ERROR" else (YELLOW if log_type == "WARN" else GREEN)
-                        print(f"[{i:02d}] [{t}] {color}[{log_type}]{RESET} [Source: {log.get('source')}] {log.get('message')}")
-                print(f"{CYAN}---------------------------------------------------------------{RESET}\n")
-            except asyncio.TimeoutError:
-                print(f"{RED}Failed to query ledger snapshot (timeout).{RESET}")
-            finally:
-                LEDGER_FUTURE = None
 
         elif cmd_name == "audit":
             AUDIT_FUTURE = asyncio.get_running_loop().create_future()
@@ -211,50 +168,54 @@ async def cli_loop():
                 AUDIT_FUTURE = None
 
         elif cmd_name == "fill":
-            if not form_id:
-                print(f"{RED}Error: FormComponent not found in registry.{RESET}")
+            if not app_id:
+                print(f"{RED}Error: App component not found in registry.{RESET}")
                 continue
-            print(f"Filling email and notes on allowlisted FormComponent ({form_id})...")
-            success_email = await execute_command({
-                "type": "setState",
-                "commandId": "set-email",
-                "target": f"{form_id}.email",
-                "value": "guest_user@example.com"
-            })
-            success_notes = await execute_command({
-                "type": "setState",
-                "commandId": "set-notes",
-                "target": f"{form_id}.notes",
-                "value": "This write should succeed."
-            })
-            if success_email and success_notes:
-                print(f"{GREEN}Public form fields modified successfully!{RESET}")
-
-        elif cmd_name == "escalate":
-            if not admin_id:
-                print(f"{RED}Error: AdminPanel component not found in registry.{RESET}")
-                continue
-
-            print(f"\n{YELLOW}[Attempt 1] Attempting to set isAdmin to True via setState...{RESET}")
+            print(f"Setting username and sensitive SSN on App ({app_id})...")
+            
+            # 1. Set username (non-sensitive)
             await execute_command({
                 "type": "setState",
-                "commandId": "hack-admin",
-                "target": f"{admin_id}.isAdmin",
-                "value": True
+                "commandId": "set-username",
+                "target": f"{app_id}.username",
+                "value": "hacker_agent"
             })
+            
+            # 2. Set SSN (sensitive, should be redacted to [REDACTED])
+            await execute_command({
+                "type": "setState",
+                "commandId": "set-ssn",
+                "target": f"{app_id}.ssn",
+                "value": "999-88-7777"
+            })
+            print(f"{GREEN}State mutation commands sent! Query the browser 'audit' to check redaction.{RESET}")
 
-            print(f"\n{YELLOW}[Attempt 2] Attempting to trigger elevate click event on #btn-escalate...{RESET}")
+        elif cmd_name == "login":
+            print("Invoking Zustand AuthStore.login action with credentials...")
+            await execute_command({
+                "type": "callAction",
+                "commandId": "call-login",
+                "target": "AuthStore.login",
+                "args": ["admin", "supersecret123"]
+            })
+            print(f"{GREEN}Action command sent! Query 'audit' to check redaction of action arguments.{RESET}")
+
+        elif cmd_name == "click":
+            if not app_id:
+                print(f"{RED}Error: App component not found in registry.{RESET}")
+                continue
+            print("Clicking submit button...")
             await execute_command({
                 "type": "dispatchEvent",
-                "commandId": "click-escalate",
-                "target": admin_id,
+                "commandId": "click-submit",
+                "target": app_id,
                 "event": "click",
-                "payload": "#btn-escalate"
+                "payload": "#btn-submit"
             })
-            print(f"{YELLOW}Check logs or query the browser 'ledger' to audit the blocked mutation alerts.{RESET}\n")
+            print(f"{GREEN}Click dispatchEvent command completed.{RESET}")
 
         else:
-            print(f"Unknown command: '{query}'. Try: 'registry', 'ledger', 'fill', 'escalate'.")
+            print(f"Unknown command: '{query}'. Try: 'registry', 'audit', 'fill', 'login', 'click'.")
 
 async def main():
     await asyncio.gather(

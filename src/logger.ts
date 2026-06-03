@@ -1,4 +1,4 @@
-import { AppLogEntry } from './protocol.js';
+import { AppLogEntry, CommandAuditEntry } from './protocol.js';
 
 type LogListener = (entry: AppLogEntry) => void;
 
@@ -165,3 +165,31 @@ class AgentLoggerImpl {
 }
 
 export const AgentLogger = new AgentLoggerImpl();
+
+class CommandAuditLoggerImpl {
+  private auditLog: CommandAuditEntry[] = [];
+
+  /**
+   * Appends an entry to the command audit log.
+   */
+  addEntry(entry: CommandAuditEntry): void {
+    this.auditLog.push(entry);
+  }
+
+  /**
+   * Retrieves the current append-only audit log snapshot.
+   */
+  getAuditLog(): CommandAuditEntry[] {
+    return [...this.auditLog];
+  }
+
+  /**
+   * Clears the current command audit log history.
+   */
+  clear(): void {
+    this.auditLog = [];
+  }
+}
+
+export const CommandAuditLogger = new CommandAuditLoggerImpl();
+

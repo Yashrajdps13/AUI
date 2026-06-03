@@ -1,7 +1,7 @@
 import { startTransition } from 'react';
 import { BridgeStore } from './store.js';
 import { AgentCommand, BridgeMessage, SerializedComponentEntry } from './protocol.js';
-import { AgentLogger } from './logger.js';
+import { AgentLogger, CommandAuditLogger } from './logger.js';
 
 export interface WriteSecurityScope {
   allowedTargets?: string[];
@@ -291,6 +291,116 @@ class AgentWebSocketManagerImpl {
     return list;
   }
 
+  private getRedactedValue(
+    target: string,
+    type: 'setState' | 'dispatchEvent' | 'callAction',
+    rawValue: any
+  ): any {
+    const registry = BridgeStore.getSnapshot();
+
+    if (type === 'setState') {
+      const lastDot = target.lastIndexOf('.');
+      if (lastDot !== -1) {
+        const componentId = target.substring(0, lastDot);
+        const stateKey = target.substring(lastDot + 1);
+        const entry = registry.get(componentId);
+        const slot = entry?.stateSlots.find((s) => s.key === stateKey);
+        if (slot?.sensitive) {
+          return '[REDACTED]';
+        }
+      }
+    } else if (type === 'dispatchEvent') {
+      const componentId = target;
+      const entry = registry.get(componentId);
+      if (entry) {
+        const hasSensitiveSlots = entry.stateSlots.some(s => s.sensitive);
+        if (hasSensitiveSlots) {
+          const payloadStr = typeof rawValue === 'object' ? JSON.stringify(rawValue) : String(rawValue);
+          const isPayloadSensitive = entry.stateSlots.some(s => s.sensitive && (
+            payloadStr.toLowerCase().includes(s.key.toLowerCase()) ||
+            target.toLowerCase().includes(s.key.toLowerCase())
+          ));
+          if (isPayloadSensitive) {
+            return '[REDACTED]';
+          }
+        }
+
+        const dom = entry.domRef;
+        if (dom) {
+          let targetDom: HTMLElement | null = dom;
+          let selector = '';
+          if (rawValue && typeof rawValue === 'object' && typeof (rawValue as any).selector === 'string') {
+            selector = (rawValue as any).selector;
+          } else if (rawValue && typeof rawValue === 'string') {
+            selector = rawValue;
+          }
+          if (selector) {
+            try {
+              const selected = dom.querySelector(selector);
+              if (selected instanceof HTMLElement) targetDom = selected;
+            } catch {
+              // query failed
+            }
+          }
+
+          if (targetDom) {
+            const isPassword = targetDom instanceof HTMLInputElement && targetDom.type === 'password';
+            const name = targetDom.getAttribute('name') || '';
+            const id = targetDom.id || '';
+            const autocomplete = targetDom.getAttribute('autocomplete') || '';
+            const placeholder = targetDom.getAttribute('placeholder') || '';
+            const className = targetDom.className || '';
+            const sensitiveKeywords = ['password', 'pin', 'secret', 'cvc', 'cvv', 'creditcard', 'cardnumber', 'ssn', 'token'];
+            const matchesKeyword = sensitiveKeywords.some(keyword =>
+              name.toLowerCase().includes(keyword) ||
+              id.toLowerCase().includes(keyword) ||
+              autocomplete.toLowerCase().includes(keyword) ||
+              placeholder.toLowerCase().includes(keyword) ||
+              className.toLowerCase().includes(keyword) ||
+              selector.toLowerCase().includes(keyword)
+            );
+
+            if (isPassword || matchesKeyword) {
+              return '[REDACTED]';
+            }
+          }
+        }
+      }
+    } else if (type === 'callAction') {
+      const lastDot = target.lastIndexOf('.');
+      if (lastDot !== -1) {
+        const storeName = target.substring(0, lastDot);
+        const actionName = target.substring(lastDot + 1);
+        
+        let componentId = storeName;
+        if (!componentId.startsWith('ZustandStore#') && registry.has(`ZustandStore#${componentId}`)) {
+          componentId = `ZustandStore#${componentId}`;
+        }
+        const entry = registry.get(componentId);
+        
+        const sensitiveKeywords = ['password', 'pin', 'secret', 'cvc', 'cvv', 'creditcard', 'cardnumber', 'ssn', 'token', 'auth', 'login', 'credentials'];
+        const matchesKeyword = sensitiveKeywords.some(keyword =>
+          actionName.toLowerCase().includes(keyword)
+        );
+
+        if (matchesKeyword) {
+          return '[REDACTED]';
+        }
+
+        if (entry) {
+          const hasSensitiveKeyInAction = entry.stateSlots.some(s => s.sensitive && (
+            actionName.toLowerCase().includes(s.key.toLowerCase())
+          ));
+          if (hasSensitiveKeyInAction) {
+            return '[REDACTED]';
+          }
+        }
+      }
+    }
+
+    return rawValue;
+  }
+
   private isWriteAllowed(target: string, type: 'state' | 'event' | 'action'): { allowed: boolean; error?: string } {
     if (!this.writeScope) {
       return { allowed: true };
@@ -537,6 +647,16 @@ class AgentWebSocketManagerImpl {
         break;
       }
 
+      case 'queryAuditLog': {
+        this.send({
+          type: 'auditLogSnapshot',
+          commandId: command.commandId,
+          auditLog: CommandAuditLogger.getAuditLog(),
+        });
+        this.send({ type: 'commandAck', commandId: command.commandId, success: true });
+        break;
+      }
+
       case 'getRegistry': {
         this.syncRegistryAndSubscriptions(true);
         this.send({ type: 'commandAck', commandId: command.commandId, success: true });
@@ -616,6 +736,16 @@ class AgentWebSocketManagerImpl {
             message: `Blocked setState -> ${command.target}: ${securityCheck.error}`,
             timestamp: Date.now(),
           });
+          const redactedVal = this.getRedactedValue(command.target, 'setState', command.value);
+          CommandAuditLogger.addEntry({
+            commandId: command.commandId,
+            type: 'setState',
+            target: command.target,
+            value: redactedVal,
+            success: false,
+            error: securityCheck.error,
+            timestamp: Date.now(),
+          });
           this.send({
             type: 'commandAck',
             commandId: command.commandId,
@@ -627,11 +757,22 @@ class AgentWebSocketManagerImpl {
 
         const lastDot = command.target.lastIndexOf('.');
         if (lastDot === -1) {
+          const err = 'Invalid target path format. Expected "componentId.stateKey".';
+          const redactedVal = this.getRedactedValue(command.target, 'setState', command.value);
+          CommandAuditLogger.addEntry({
+            commandId: command.commandId,
+            type: 'setState',
+            target: command.target,
+            value: redactedVal,
+            success: false,
+            error: err,
+            timestamp: Date.now(),
+          });
           this.send({
             type: 'commandAck',
             commandId: command.commandId,
             success: false,
-            error: 'Invalid target path format. Expected "componentId.stateKey".',
+            error: err,
           });
           return;
         }
@@ -657,21 +798,49 @@ class AgentWebSocketManagerImpl {
             startTransition(() => {
               slot.setter(command.value);
             });
+            CommandAuditLogger.addEntry({
+              commandId: command.commandId,
+              type: 'setState',
+              target: command.target,
+              value: loggedValue,
+              success: true,
+              timestamp: Date.now(),
+            });
             this.send({ type: 'commandAck', commandId: command.commandId, success: true });
           } catch (err: any) {
+            const errMsg = `State setter failed: ${err.message || err}`;
+            CommandAuditLogger.addEntry({
+              commandId: command.commandId,
+              type: 'setState',
+              target: command.target,
+              value: loggedValue,
+              success: false,
+              error: errMsg,
+              timestamp: Date.now(),
+            });
             this.send({
               type: 'commandAck',
               commandId: command.commandId,
               success: false,
-              error: `State setter failed: ${err.message || err}`,
+              error: errMsg,
             });
           }
         } else {
+          const errMsg = `Target state "${stateKey}" not found in component "${componentId}".`;
+          CommandAuditLogger.addEntry({
+            commandId: command.commandId,
+            type: 'setState',
+            target: command.target,
+            value: loggedValue,
+            success: false,
+            error: errMsg,
+            timestamp: Date.now(),
+          });
           this.send({
             type: 'commandAck',
             commandId: command.commandId,
             success: false,
-            error: `Target state "${stateKey}" not found in component "${componentId}".`,
+            error: errMsg,
           });
         }
         break;
@@ -686,6 +855,16 @@ class AgentWebSocketManagerImpl {
             message: `Blocked dispatchEvent -> ${command.event} on ${command.target}: ${securityCheck.error}`,
             timestamp: Date.now(),
           });
+          const redactedVal = this.getRedactedValue(command.target, 'dispatchEvent', command.payload);
+          CommandAuditLogger.addEntry({
+            commandId: command.commandId,
+            type: 'dispatchEvent',
+            target: `${command.target}.${command.event}`,
+            value: redactedVal,
+            success: false,
+            error: securityCheck.error,
+            timestamp: Date.now(),
+          });
           this.send({
             type: 'commandAck',
             commandId: command.commandId,
@@ -695,20 +874,32 @@ class AgentWebSocketManagerImpl {
           return;
         }
 
+        const redactedVal = this.getRedactedValue(command.target, 'dispatchEvent', command.payload);
+
         AgentLogger.addEntry({
           type: 'info',
           source: 'agent',
-          message: `dispatchEvent -> ${command.event} on ${command.target} (payload: ${typeof command.payload === 'object' ? JSON.stringify(command.payload) : String(command.payload)})`,
+          message: `dispatchEvent -> ${command.event} on ${command.target} (payload: ${typeof redactedVal === 'object' ? JSON.stringify(redactedVal) : String(redactedVal)})`,
           timestamp: Date.now(),
         });
 
         const entry = registry.get(command.target);
         if (!entry || !entry.domRef) {
+          const errMsg = `Component DOM reference for "${command.target}" not found.`;
+          CommandAuditLogger.addEntry({
+            commandId: command.commandId,
+            type: 'dispatchEvent',
+            target: `${command.target}.${command.event}`,
+            value: redactedVal,
+            success: false,
+            error: errMsg,
+            timestamp: Date.now(),
+          });
           this.send({
             type: 'commandAck',
             commandId: command.commandId,
             success: false,
-            error: `Component DOM reference for "${command.target}" not found.`,
+            error: errMsg,
           });
           return;
         }
@@ -775,13 +966,31 @@ class AgentWebSocketManagerImpl {
             throw new Error(`Unsupported event type "${command.event}"`);
           }
 
+          CommandAuditLogger.addEntry({
+            commandId: command.commandId,
+            type: 'dispatchEvent',
+            target: `${command.target}.${command.event}`,
+            value: redactedVal,
+            success: true,
+            timestamp: Date.now(),
+          });
           this.send({ type: 'commandAck', commandId: command.commandId, success: true });
         } catch (err: any) {
+          const errMsg = `Failed to dispatch event: ${err.message || err}`;
+          CommandAuditLogger.addEntry({
+            commandId: command.commandId,
+            type: 'dispatchEvent',
+            target: `${command.target}.${command.event}`,
+            value: redactedVal,
+            success: false,
+            error: errMsg,
+            timestamp: Date.now(),
+          });
           this.send({
             type: 'commandAck',
             commandId: command.commandId,
             success: false,
-            error: `Failed to dispatch event: ${err.message || err}`,
+            error: errMsg,
           });
         }
         break;
@@ -796,6 +1005,16 @@ class AgentWebSocketManagerImpl {
             message: `Blocked callAction -> ${command.target}: ${securityCheck.error}`,
             timestamp: Date.now(),
           });
+          const redactedVal = this.getRedactedValue(command.target, 'callAction', command.args);
+          CommandAuditLogger.addEntry({
+            commandId: command.commandId,
+            type: 'callAction',
+            target: command.target,
+            value: redactedVal,
+            success: false,
+            error: securityCheck.error,
+            timestamp: Date.now(),
+          });
           this.send({
             type: 'commandAck',
             commandId: command.commandId,
@@ -807,11 +1026,22 @@ class AgentWebSocketManagerImpl {
 
         const lastDot = command.target.lastIndexOf('.');
         if (lastDot === -1) {
+          const errMsg = 'Invalid target format. Expected "StoreName.actionName" or "ZustandStore#StoreName.actionName".';
+          const redactedVal = this.getRedactedValue(command.target, 'callAction', command.args);
+          CommandAuditLogger.addEntry({
+            commandId: command.commandId,
+            type: 'callAction',
+            target: command.target,
+            value: redactedVal,
+            success: false,
+            error: errMsg,
+            timestamp: Date.now(),
+          });
           this.send({
             type: 'commandAck',
             commandId: command.commandId,
             success: false,
-            error: 'Invalid target format. Expected "StoreName.actionName" or "ZustandStore#StoreName.actionName".',
+            error: errMsg,
           });
           return;
         }
@@ -826,30 +1056,54 @@ class AgentWebSocketManagerImpl {
 
         const entry = registry.get(componentId);
         if (!entry) {
+          const errMsg = `Store/Component "${componentId}" not found in registry.`;
+          const redactedVal = this.getRedactedValue(command.target, 'callAction', command.args);
+          CommandAuditLogger.addEntry({
+            commandId: command.commandId,
+            type: 'callAction',
+            target: command.target,
+            value: redactedVal,
+            success: false,
+            error: errMsg,
+            timestamp: Date.now(),
+          });
           this.send({
             type: 'commandAck',
             commandId: command.commandId,
             success: false,
-            error: `Store/Component "${componentId}" not found in registry.`,
+            error: errMsg,
           });
           return;
         }
 
         const actionFn = entry.actions?.[actionName];
         if (typeof actionFn !== 'function') {
+          const errMsg = `Action "${actionName}" not found or is not a function in "${componentId}".`;
+          const redactedVal = this.getRedactedValue(command.target, 'callAction', command.args);
+          CommandAuditLogger.addEntry({
+            commandId: command.commandId,
+            type: 'callAction',
+            target: command.target,
+            value: redactedVal,
+            success: false,
+            error: errMsg,
+            timestamp: Date.now(),
+          });
           this.send({
             type: 'commandAck',
             commandId: command.commandId,
             success: false,
-            error: `Action "${actionName}" not found or is not a function in "${componentId}".`,
+            error: errMsg,
           });
           return;
         }
 
+        const redactedVal = this.getRedactedValue(command.target, 'callAction', command.args);
+
         AgentLogger.addEntry({
           type: 'info',
           source: 'agent',
-          message: `callAction -> ${command.target} (args: ${JSON.stringify(command.args)})`,
+          message: `callAction -> ${command.target} (args: ${JSON.stringify(redactedVal)})`,
           timestamp: Date.now(),
         });
 
@@ -858,26 +1112,62 @@ class AgentWebSocketManagerImpl {
           if (result instanceof Promise) {
             result.then(
               () => {
+                CommandAuditLogger.addEntry({
+                  commandId: command.commandId,
+                  type: 'callAction',
+                  target: command.target,
+                  value: redactedVal,
+                  success: true,
+                  timestamp: Date.now(),
+                });
                 this.send({ type: 'commandAck', commandId: command.commandId, success: true });
               },
               (err: any) => {
+                const errMsg = `Async action failed: ${err.message || err}`;
+                CommandAuditLogger.addEntry({
+                  commandId: command.commandId,
+                  type: 'callAction',
+                  target: command.target,
+                  value: redactedVal,
+                  success: false,
+                  error: errMsg,
+                  timestamp: Date.now(),
+                });
                 this.send({
                   type: 'commandAck',
                   commandId: command.commandId,
                   success: false,
-                  error: `Async action failed: ${err.message || err}`,
+                  error: errMsg,
                 });
               }
             );
           } else {
+            CommandAuditLogger.addEntry({
+              commandId: command.commandId,
+              type: 'callAction',
+              target: command.target,
+              value: redactedVal,
+              success: true,
+              timestamp: Date.now(),
+            });
             this.send({ type: 'commandAck', commandId: command.commandId, success: true });
           }
         } catch (err: any) {
+          const errMsg = `Action invocation failed: ${err.message || err}`;
+          CommandAuditLogger.addEntry({
+            commandId: command.commandId,
+            type: 'callAction',
+            target: command.target,
+            value: redactedVal,
+            success: false,
+            error: errMsg,
+            timestamp: Date.now(),
+          });
           this.send({
             type: 'commandAck',
             commandId: command.commandId,
             success: false,
-            error: `Action invocation failed: ${err.message || err}`,
+            error: errMsg,
           });
         }
         break;

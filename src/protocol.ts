@@ -42,6 +42,16 @@ export interface AppLogEntry {
   stack?: string;
 }
 
+export interface CommandAuditEntry {
+  commandId: string;
+  type: 'setState' | 'dispatchEvent' | 'callAction';
+  target: string;
+  value: unknown;
+  success: boolean;
+  error?: string;
+  timestamp: number;
+}
+
 /**
  * Commands received from the Agent (Agent -> Bridge).
  */
@@ -53,6 +63,7 @@ export type AgentCommand =
   | { type: 'subscribe'; commandId: string; target: string }
   | { type: 'unsubscribe'; commandId: string; target: string }
   | { type: 'queryLedger'; commandId: string }
+  | { type: 'queryAuditLog'; commandId: string }
   | { type: 'callAction'; commandId: string; target: string; args: unknown[] }
   | {
       type: 'waitFor';
@@ -74,4 +85,5 @@ export type BridgeMessage =
   | { type: 'commandAck'; commandId: string; success: boolean; error?: string }
   | { type: 'renderSettled'; target: string }
   | { type: 'appLog'; entry: AppLogEntry }
-  | { type: 'ledgerSnapshot'; commandId: string; ledger: AppLogEntry[] };
+  | { type: 'ledgerSnapshot'; commandId: string; ledger: AppLogEntry[] }
+  | { type: 'auditLogSnapshot'; commandId: string; auditLog: CommandAuditEntry[] };
