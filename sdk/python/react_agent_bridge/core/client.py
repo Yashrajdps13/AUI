@@ -33,10 +33,13 @@ class ReactAgentBridge(CommandDispatcher):
         self.connection = None
         self._server = None
 
+        from react_agent_bridge.core.rules.registry import RuleRegistry
+        from react_agent_bridge.core.rules.engine import RulesEngine
+
         # Core components
         self.futures_manager = CommandFutureManager()
         self.graph = ApplicationStateGraph()
-        self.rules_engine = None  # Loaded in Cycle 3/4
+        self.rules_engine = RulesEngine(RuleRegistry())
         self.llm_adapter = llm_adapter or LiteLLMAdapter()
 
         # Event Listeners

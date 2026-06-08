@@ -7,6 +7,7 @@ const DeviceContext = createContext(null);
 export default function App() {
   /**
    * @description Device unlock state. If locked, you cannot modify settings. Use PIN '7788' and click Unlock to unlock.
+   * @readonly
    */
   const [isUnlocked, setIsUnlocked] = useState(false);
 

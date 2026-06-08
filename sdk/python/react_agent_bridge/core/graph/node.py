@@ -10,6 +10,7 @@ class SlotNode:
     hook_index: int
     description: Optional[str] = None
     sensitive: bool = False
+    writeable: Optional[str] = None
     value: Any = None
     previous_value: Any = None
     last_changed_at: float = 0.0

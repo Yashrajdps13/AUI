@@ -7,6 +7,7 @@ class SerializedStateSlot(BaseModel):
     hookIndex: int
     description: Optional[str] = None
     sensitive: Optional[bool] = False
+    writeable: Optional[str] = None
 
 
 class InteractiveElement(BaseModel):

@@ -171,6 +171,36 @@ function isSensitiveComment(value: string): boolean {
   return false;
 }
 
+function parseWriteableJSDoc(value: string): 'user' | 'agent' | 'both' | null {
+  let cleaned = value;
+  if (cleaned.startsWith('*')) {
+    cleaned = cleaned.slice(1);
+  }
+
+  const lines = cleaned.split('\n').map((line) => {
+    let l = line.trim();
+    if (l.startsWith('*')) {
+      l = l.slice(1).trim();
+    }
+    return l;
+  });
+
+  for (const line of lines) {
+    if (line.startsWith('@readonly')) {
+      return 'user';
+    }
+    const match = line.match(/^@writeable\s+(\S+)/i);
+    if (match) {
+      const val = match[1].toLowerCase();
+      if (val === 'user' || val === 'agent' || val === 'both') {
+        return val as any;
+      }
+    }
+  }
+  return null;
+}
+
+
 
 export default function reactAgentBridgeBabelPlugin(): PluginObj<PluginState> {
   return {
@@ -329,6 +359,7 @@ export default function reactAgentBridgeBabelPlugin(): PluginObj<PluginState> {
         // Extract JSDoc comment description and sensitive metadata if present
         let description: string | undefined;
         let sensitive = false;
+        let writeable: 'user' | 'agent' | 'both' | null = null;
         const leadingComments = findLeadingComments(callPath);
         if (leadingComments && leadingComments.length > 0) {
           const lastComment = leadingComments[leadingComments.length - 1];
@@ -338,6 +369,7 @@ export default function reactAgentBridgeBabelPlugin(): PluginObj<PluginState> {
               description = parsed;
             }
             sensitive = isSensitiveComment(lastComment.value);
+            writeable = parseWriteableJSDoc(lastComment.value);
           }
         }
 
@@ -363,7 +395,7 @@ export default function reactAgentBridgeBabelPlugin(): PluginObj<PluginState> {
           t.numericLiteral(hookIndex),
         ];
 
-        if (description || sensitive) {
+        if (description || sensitive || writeable) {
           if (node.arguments.length > 0) {
             args.push(node.arguments[0] as any);
           } else {
@@ -379,6 +411,11 @@ export default function reactAgentBridgeBabelPlugin(): PluginObj<PluginState> {
           if (sensitive) {
             properties.push(
               t.objectProperty(t.identifier('sensitive'), t.booleanLiteral(true))
+            );
+          }
+          if (writeable) {
+            properties.push(
+              t.objectProperty(t.identifier('writeable'), t.stringLiteral(writeable))
             );
           }
 

@@ -113,6 +113,38 @@ def test_rules_engine_preflight():
     assert res_invalid.violations[0].rule_name == "ForbiddenRule"
 
 
+def test_writeable_slot_rule():
+    from react_agent_bridge.core.rules.registry import RuleRegistry
+    from react_agent_bridge.core.rules.engine import RulesEngine
+    from react_agent_bridge.core.graph.state_graph import ApplicationStateGraph
+    from react_agent_bridge.core.models import SerializedStateSlot, SerializedComponentEntry, RegistryDeltaMessage
+
+    registry = RuleRegistry()
+    engine = RulesEngine(registry)
+    graph = ApplicationStateGraph()
+
+    slot_user = SerializedStateSlot(key="secretKey", hookIndex=0, writeable="user")
+    slot_both = SerializedStateSlot(key="operatingMode", hookIndex=1, writeable="both")
+
+    comp = SerializedComponentEntry(
+        id="App#r1", displayName="App", mountedAt=100, route="/", stateSlots=[slot_user, slot_both]
+    )
+
+    graph.apply_delta(RegistryDeltaMessage(added=[comp], removed=[], updated=[]))
+
+    # Command setting user-writable only slot -> should be blocked by WriteableSlotRule
+    invalid_cmd = {"type": "setState", "target": "App#r1.secretKey", "value": "new-secret"}
+    res_invalid = engine.evaluate(invalid_cmd, graph)
+    assert res_invalid.valid is False
+    assert len(res_invalid.violations) == 1
+    assert res_invalid.violations[0].rule_name == "WriteableSlotRule"
+
+    # Command setting both-writable slot -> should succeed
+    valid_cmd = {"type": "setState", "target": "App#r1.operatingMode", "value": "boost"}
+    res_valid = engine.evaluate(valid_cmd, graph)
+    assert res_valid.valid is True
+
+
 from react_agent_bridge.core.llm import BaseLLMAdapter, StructuredAction
 from react_agent_bridge.core.planner.goal import Goal, GoalCondition
 from react_agent_bridge.core.planner.planner import GoalDirectedPlanner

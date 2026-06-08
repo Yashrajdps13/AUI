@@ -1,6 +1,11 @@
-def format_slot(key: str, value: any, description: str = None) -> str:
-    desc_str = f" ({description})" if description else ""
-    return f"    - {key}: {value}{desc_str}"
+def format_slot(key: str, value: any, description: str = None, writeable: str = None) -> str:
+    meta = []
+    if description:
+        meta.append(description)
+    if writeable == "user":
+        meta.append("READ-ONLY")
+    meta_str = f" ({', '.join(meta)})" if meta else ""
+    return f"    - {key}: {value}{meta_str}"
 
 
 def format_action(action_name: str) -> str:
@@ -25,13 +30,14 @@ def format_component(comp_id: str, comp_data: dict) -> str:
 
     slots = comp_data.get("stateSlots", {})
     descs = comp_data.get("stateSlotDescriptions", {})
+    writeables = comp_data.get("stateSlotWriteables", {})
     if slots:
         lines.append("  State Slots:")
         for k, v in slots.items():
             # Skip logs and complex collections to prevent LLM confusion and save context tokens
             if k.lower() in ("auditlog", "log", "logs") or isinstance(v, (list, dict)):
                 continue
-            lines.append(format_slot(k, v, descs.get(k)))
+            lines.append(format_slot(k, v, descs.get(k), writeables.get(k)))
 
     actions = comp_data.get("actions", [])
     if actions:

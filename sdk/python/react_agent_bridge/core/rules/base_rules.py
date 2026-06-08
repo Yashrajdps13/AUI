@@ -156,6 +156,31 @@ def action_registered_rule(command: dict, graph: ApplicationStateGraph) -> Optio
     return None
 
 
+def writeable_slot_rule(command: dict, graph: ApplicationStateGraph) -> Optional[RuleViolation]:
+    """Ensures state mutation operations do not target slots that are writeable only by the user."""
+    if command.get("type") != "setState":
+        return None
+
+    target = command.get("target", "")
+    parts = target.rsplit(".", 1)
+    if len(parts) != 2:
+        return None
+
+    comp_id, slot_key = parts
+    comp = graph.get_component(comp_id)
+    if not comp:
+        return None
+
+    slot = comp.state_slots.get(slot_key)
+    if slot and getattr(slot, "writeable", None) == "user":
+        return RuleViolation(
+            rule_name="WriteableSlotRule",
+            message=f"Direct setState mutation of '{target}' is blocked. State is marked as user-writable only.",
+            target=target
+        )
+    return None
+
+
 ALL_BASE_RULES = [
     target_mounted_rule,
     slot_exists_rule,
@@ -163,4 +188,5 @@ ALL_BASE_RULES = [
     sensitive_slot_read_protection_rule,
     disabled_element_rule,
     action_registered_rule,
+    writeable_slot_rule,
 ]

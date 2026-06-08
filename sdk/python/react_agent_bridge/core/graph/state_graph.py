@@ -45,12 +45,14 @@ class ApplicationStateGraph:
                     slot_node = existing_slot
                     slot_node.description = s.description
                     slot_node.sensitive = s.sensitive or False
+                    slot_node.writeable = s.writeable
                 else:
                     slot_node = SlotNode(
                         key=s.key,
                         hook_index=s.hookIndex,
                         description=s.description,
                         sensitive=s.sensitive or False,
+                        writeable=s.writeable,
                         value=None
                     )
                 slots[s.key] = slot_node
@@ -170,10 +172,13 @@ class ApplicationStateGraph:
         for comp_id, comp in self.components.items():
             slots_snap = {}
             desc_snap = {}
+            writeables_snap = {}
             for slot_key, slot in comp.state_slots.items():
                 slots_snap[slot_key] = "[REDACTED]" if (slot.sensitive and slot.value) else slot.value
                 if slot.description:
                     desc_snap[slot_key] = slot.description
+                if getattr(slot, "writeable", None):
+                    writeables_snap[slot_key] = slot.writeable
             
             snap[comp_id] = {
                 "displayName": comp.display_name,
@@ -181,6 +186,7 @@ class ApplicationStateGraph:
                 "route": comp.route,
                 "stateSlots": slots_snap,
                 "stateSlotDescriptions": desc_snap,
+                "stateSlotWriteables": writeables_snap,
                 "interactiveElements": [
                     {
                         "selector": el.selector,
