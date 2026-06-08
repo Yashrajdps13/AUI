@@ -1,20 +1,16 @@
 import asyncio
-import json
 import os
 import sys
 from datetime import datetime
-from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
 
 # Load local environment variables
 load_dotenv()
 
-# Global connection reference and latest registry cache
-ACTIVE_CONNECTION = None
-LATEST_REGISTRY: Dict[str, Any] = {}
-COMMAND_FUTURE: Optional[asyncio.Future] = None
-LEDGER_FUTURE: Optional[asyncio.Future] = None
-AUDIT_FUTURE: Optional[asyncio.Future] = None
+# Add local SDK path to sys.path before imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../sdk/python")))
+
+from react_agent_bridge import ReactAgentBridge, AgentRunner, BridgeError
 
 # Terminal text colors
 RED = "\033[1;31m"
@@ -24,95 +20,33 @@ CYAN = "\033[1;36m"
 MAGENTA = "\033[1;35m"
 RESET = "\033[0m"
 
-async def execute_command(cmd: Dict[str, Any]) -> bool:
-    global ACTIVE_CONNECTION, COMMAND_FUTURE
-    if not ACTIVE_CONNECTION:
-        print(f"{RED}Error: No React client connected.{RESET}")
-        return False
+# Initialize bridge server on port 8000
+bridge = ReactAgentBridge(host="localhost", port=8000)
+runner = AgentRunner(bridge)
 
-    COMMAND_FUTURE = asyncio.get_running_loop().create_future()
-    await ACTIVE_CONNECTION.send(json.dumps(cmd))
-    
-    try:
-        ack = await asyncio.wait_for(COMMAND_FUTURE, timeout=3.0)
-        success = ack.get("success", False)
-        if not success:
-            print(f"{RED}[Blocked/Failed] {ack.get('error', 'Unknown error')}{RESET}")
-        return success
-    except asyncio.TimeoutError:
-        print(f"{RED}[Error] Command timed out waiting for Ack.{RESET}")
-        return False
-    finally:
-        COMMAND_FUTURE = None
-
-# ==========================================
-# WEBSOCKET SERVER IMPLEMENTATION
-# ==========================================
-import websockets
-
-async def handle_ws(websocket):
-    global ACTIVE_CONNECTION, LATEST_REGISTRY, COMMAND_FUTURE, LEDGER_FUTURE, AUDIT_FUTURE
+def on_connect():
     print(f"\n{GREEN}[Bridge Connected] React application successfully linked!{RESET}")
-    ACTIVE_CONNECTION = websocket
 
-    # Request the full registry schema on connection
-    await websocket.send(json.dumps({
-        "type": "getRegistry",
-        "commandId": "initial-sync"
-    }))
+def on_disconnect():
+    print(f"\n{YELLOW}[Bridge Disconnected] React app closed the connection.{RESET}")
 
-    try:
-        async for message in websocket:
-            data = json.loads(message)
-            msg_type = data.get("type")
+def on_app_log(entry):
+    t_str = datetime.fromtimestamp(entry.timestamp / 1000).strftime('%H:%M:%S')
+    msg_color = RED if entry.type == "error" else (YELLOW if entry.type == "warn" else GREEN)
+    print(f"\n{msg_color}[STREAMED LOG] [{t_str}] [Source: {entry.source}] {entry.message}{RESET}")
+    if entry.stack:
+        print(f"{msg_color}{entry.stack}{RESET}")
+    print("Agent Query > ", end="", flush=True)
 
-            if msg_type == "registryDelta":
-                for comp in data.get("added", []):
-                    LATEST_REGISTRY[comp["id"]] = comp
-                for comp in data.get("updated", []):
-                    LATEST_REGISTRY[comp["id"]] = comp
-                for comp_id in data.get("removed", []):
-                    LATEST_REGISTRY.pop(comp_id, None)
+bridge.add_listener("connect", on_connect)
+bridge.add_listener("disconnect", on_disconnect)
+bridge.add_listener("log", on_app_log)
 
-            elif msg_type == "commandAck":
-                if COMMAND_FUTURE and not COMMAND_FUTURE.done():
-                    COMMAND_FUTURE.set_result(data)
-
-            elif msg_type == "appLog":
-                entry = data.get("entry", {})
-                t_str = datetime.fromtimestamp(entry.get("timestamp", 0) / 1000).strftime('%H:%M:%S')
-                msg_color = RED if entry.get("type") == "error" else (YELLOW if entry.get("type") == "warn" else GREEN)
-                print(f"\n{msg_color}[STREAMED LOG] [{t_str}] [Source: {entry.get('source')}] {entry.get('message')}{RESET}")
-                if entry.get("stack"):
-                    print(f"{msg_color}{entry.get('stack')}{RESET}")
-                print("Agent Query > ", end="", flush=True)
-
-            elif msg_type == "ledgerSnapshot":
-                if LEDGER_FUTURE and not LEDGER_FUTURE.done():
-                    LEDGER_FUTURE.set_result(data)
-            
-            elif msg_type == "auditLogSnapshot":
-                if AUDIT_FUTURE and not AUDIT_FUTURE.done():
-                    AUDIT_FUTURE.set_result(data)
-
-    except websockets.exceptions.ConnectionClosedOK:
-        print(f"\n{YELLOW}[Bridge Disconnected] React app closed the connection.{RESET}")
-    except Exception as e:
-        print(f"\n{RED}[Error] Connection crashed: {e}{RESET}")
-    finally:
-        ACTIVE_CONNECTION = None
-        LATEST_REGISTRY.clear()
-
-async def start_server():
-    server = await websockets.serve(handle_ws, "localhost", 8000)
-    print(f"{CYAN}WebSocket Server running at ws://localhost:8000{RESET}")
-    await server.wait_closed()
 
 # ==========================================
 # INTERACTIVE CLI LOOP
 # ==========================================
 async def cli_loop():
-    global LEDGER_FUTURE, AUDIT_FUTURE
     print(f"\n=======================================================")
     print(f"{CYAN}AUI Write-Side Security Scoping Playground{RESET}")
     print("Commands:")
@@ -134,41 +68,35 @@ async def cli_loop():
 
         if cmd_name in ["exit", "quit"]:
             print("Shutting down agent...")
+            await bridge.stop()
             sys.exit(0)
 
-        if not ACTIVE_CONNECTION:
+        if not bridge.connection:
             print(f"{RED}Error: No React client connected. Please open the frontend in your browser.{RESET}")
             continue
 
         form_id = None
         admin_id = None
-        for cid in LATEST_REGISTRY.keys():
-            if cid.startswith("FormComponent#"):
-                form_id = cid
-            elif cid.startswith("AdminPanel#"):
-                admin_id = cid
+        for comp in bridge.graph.get_mounted_components():
+            if comp.id.startswith("FormComponent#"):
+                form_id = comp.id
+            elif comp.id.startswith("AdminPanel#"):
+                admin_id = comp.id
 
         if cmd_name == "registry":
             print(f"\n{CYAN}--- Active Bridge Registry ---{RESET}")
-            for comp_id, comp in LATEST_REGISTRY.items():
-                print(f"ID: {GREEN}{comp_id}{RESET}")
-                print(f"  DisplayName: {comp.get('displayName')}")
+            for comp in bridge.graph.get_mounted_components():
+                print(f"ID: {GREEN}{comp.id}{RESET}")
+                print(f"  DisplayName: {comp.display_name}")
                 print(f"  State Slots:")
-                for slot in comp.get("stateSlots", []):
-                    sensitive_flag = f" {RED}[SENSITIVE]{RESET}" if slot.get("sensitive") else ""
-                    print(f"    - {slot.get('key')} (hookIndex: {slot.get('hookIndex')}){sensitive_flag}")
+                for slot in comp.state_slots.values():
+                    sensitive_flag = f" {RED}[SENSITIVE]{RESET}" if slot.sensitive else ""
+                    print(f"    - {slot.key} (hookIndex: {slot.hook_index}){sensitive_flag}")
             print(f"{CYAN}------------------------------{RESET}\n")
 
         elif cmd_name == "ledger":
-            LEDGER_FUTURE = asyncio.get_running_loop().create_future()
-            await ACTIVE_CONNECTION.send(json.dumps({
-                "type": "queryLedger",
-                "commandId": "get-ledger-snapshot"
-            }))
-            
             try:
-                snapshot = await asyncio.wait_for(LEDGER_FUTURE, timeout=3.0)
-                ledger = snapshot.get("ledger", [])
+                ledger = await bridge.query_ledger(timeout=3.0)
                 print(f"\n{CYAN}--- Circular Log Ledger Snapshot (Browser Flight Recorder) ---{RESET}")
                 if not ledger:
                     print("Ledger is empty.")
@@ -179,21 +107,12 @@ async def cli_loop():
                         color = RED if log_type == "ERROR" else (YELLOW if log_type == "WARN" else GREEN)
                         print(f"[{i:02d}] [{t}] {color}[{log_type}]{RESET} [Source: {log.get('source')}] {log.get('message')}")
                 print(f"{CYAN}---------------------------------------------------------------{RESET}\n")
-            except asyncio.TimeoutError:
-                print(f"{RED}Failed to query ledger snapshot (timeout).{RESET}")
-            finally:
-                LEDGER_FUTURE = None
+            except Exception as e:
+                print(f"{RED}Failed to query ledger snapshot: {e}{RESET}")
 
         elif cmd_name == "audit":
-            AUDIT_FUTURE = asyncio.get_running_loop().create_future()
-            await ACTIVE_CONNECTION.send(json.dumps({
-                "type": "queryAuditLog",
-                "commandId": "get-audit-snapshot"
-            }))
-            
             try:
-                snapshot = await asyncio.wait_for(AUDIT_FUTURE, timeout=3.0)
-                audit_log = snapshot.get("auditLog", [])
+                audit_log = await bridge.query_audit_log(timeout=3.0)
                 print(f"\n{CYAN}--- Command Audit Log (Append-Only) ---{RESET}")
                 if not audit_log:
                     print("Audit log is empty.")
@@ -205,30 +124,21 @@ async def cli_loop():
                         err_str = f" | Error: {entry.get('error')}" if entry.get("error") else ""
                         print(f"[{i:02d}] [{t}] {success_str} | Command: {entry.get('type')} | Target: {entry.get('target')} | Value: {val_str}{err_str}")
                 print(f"{CYAN}---------------------------------------{RESET}\n")
-            except asyncio.TimeoutError:
-                print(f"{RED}Failed to query command audit log snapshot (timeout).{RESET}")
-            finally:
-                AUDIT_FUTURE = None
+            except Exception as e:
+                print(f"{RED}Failed to query command audit log snapshot: {e}{RESET}")
 
         elif cmd_name == "fill":
             if not form_id:
                 print(f"{RED}Error: FormComponent not found in registry.{RESET}")
                 continue
             print(f"Filling email and notes on allowlisted FormComponent ({form_id})...")
-            success_email = await execute_command({
-                "type": "setState",
-                "commandId": "set-email",
-                "target": f"{form_id}.email",
-                "value": "guest_user@example.com"
-            })
-            success_notes = await execute_command({
-                "type": "setState",
-                "commandId": "set-notes",
-                "target": f"{form_id}.notes",
-                "value": "This write should succeed."
-            })
-            if success_email and success_notes:
-                print(f"{GREEN}Public form fields modified successfully!{RESET}")
+            try:
+                success_email = await bridge.set_state(f"{form_id}.email", "guest_user@example.com")
+                success_notes = await bridge.set_state(f"{form_id}.notes", "This write should succeed.")
+                if success_email and success_notes:
+                    print(f"{GREEN}Public form fields modified successfully!{RESET}")
+            except BridgeError as e:
+                print(f"{RED}[Blocked/Failed] {e}{RESET}")
 
         elif cmd_name == "escalate":
             if not admin_id:
@@ -236,31 +146,25 @@ async def cli_loop():
                 continue
 
             print(f"\n{YELLOW}[Attempt 1] Attempting to set isAdmin to True via setState...{RESET}")
-            await execute_command({
-                "type": "setState",
-                "commandId": "hack-admin",
-                "target": f"{admin_id}.isAdmin",
-                "value": True
-            })
+            try:
+                await bridge.set_state(f"{admin_id}.isAdmin", True)
+            except BridgeError as e:
+                print(f"{RED}[Blocked/Failed] {e}{RESET}")
 
             print(f"\n{YELLOW}[Attempt 2] Attempting to trigger elevate click event on #btn-escalate...{RESET}")
-            await execute_command({
-                "type": "dispatchEvent",
-                "commandId": "click-escalate",
-                "target": admin_id,
-                "event": "click",
-                "payload": "#btn-escalate"
-            })
+            try:
+                await bridge.dispatch_event(admin_id, "click", "#btn-escalate")
+            except BridgeError as e:
+                print(f"{RED}[Blocked/Failed] {e}{RESET}")
             print(f"{YELLOW}Check logs or query the browser 'ledger' to audit the blocked mutation alerts.{RESET}\n")
 
         else:
             print(f"Unknown command: '{query}'. Try: 'registry', 'ledger', 'fill', 'escalate'.")
 
+
 async def main():
-    await asyncio.gather(
-        start_server(),
-        cli_loop()
-    )
+    await bridge.start()
+    await cli_loop()
 
 if __name__ == "__main__":
     try:

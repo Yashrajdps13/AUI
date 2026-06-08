@@ -3,6 +3,7 @@ from react_agent_bridge.core.graph.state_graph import ApplicationStateGraph
 from react_agent_bridge.core.rules.engine import RulesEngine
 from react_agent_bridge.core.rules.registry import RuleRegistry
 from react_agent_bridge.core.planner.planner import GoalDirectedPlanner
+from react_agent_bridge.core.planner.runner import AgentRunner, AgentState
 from react_agent_bridge.core.planner.goal import Goal, GoalCondition
 from react_agent_bridge.storage.memory import MemoryStore
 from react_agent_bridge.storage.sqlite import SQLiteStore
@@ -27,6 +28,8 @@ __all__ = [
     "RulesEngine",
     "RuleRegistry",
     "GoalDirectedPlanner",
+    "AgentRunner",
+    "AgentState",
     "Goal",
     "GoalCondition",
     "MemoryStore",

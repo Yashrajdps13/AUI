@@ -315,5 +315,17 @@ def test_goal_condition_sensitive_redacted_evaluation():
     assert cond.evaluate(snapshot_after) is True
 
 
+def test_agent_runner_init_and_compilation():
+    from react_agent_bridge import ReactAgentBridge, AgentRunner
+    
+    bridge = ReactAgentBridge(host="localhost", port=8000)
+    runner = AgentRunner(bridge, model="ollama/qwen2.5:7b", max_steps=15)
+    
+    assert runner.model == "ollama/qwen2.5:7b"
+    assert runner.max_steps == 15
+    assert runner.graph is not None
+
+
+
 
 

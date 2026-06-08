@@ -48,6 +48,7 @@ class ReactAgentBridge(CommandDispatcher):
             "disconnect": set(),
             "registry_update": set(),
             "log": set(),
+            "state_update": set(),
         }
 
     def add_listener(self, event: str, callback: Callable):
@@ -159,6 +160,7 @@ class ReactAgentBridge(CommandDispatcher):
 
         elif msg_type == "stateSnapshot":
             self.graph.update_state_value(msg.target, msg.value)
+            self._trigger_event("state_update", msg.target, msg.value)
 
         elif msg_type == "commandAck":
             if not msg.success:
