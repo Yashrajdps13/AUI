@@ -614,7 +614,7 @@ class AgentWebSocketManagerImpl {
 
       for (const slot of entry.stateSlots) {
         const target = `${componentId}.${slot.key}`;
-        const valueToSend = slot.sensitive ? '[REDACTED]' : slot.value;
+        const valueToSend = (slot.sensitive && slot.value) ? '[REDACTED]' : slot.value;
         const valStr = JSON.stringify(valueToSend);
         const prevValStr = this.lastSentValues.get(target);
 
@@ -637,6 +637,13 @@ class AgentWebSocketManagerImpl {
     const registry = BridgeStore.getSnapshot();
 
     switch (command.type) {
+      case 'agentStatus': {
+        BridgeStore.setAgentStatus(command.status);
+        if (command.commandId) {
+          this.send({ type: 'commandAck', commandId: command.commandId, success: true });
+        }
+        break;
+      }
       case 'queryLedger': {
         this.send({
           type: 'ledgerSnapshot',
@@ -672,7 +679,7 @@ class AgentWebSocketManagerImpl {
         if (entry) {
           for (const slot of entry.stateSlots) {
             const target = `${command.target}.${slot.key}`;
-            const valueToSend = slot.sensitive ? '[REDACTED]' : slot.value;
+            const valueToSend = (slot.sensitive && slot.value) ? '[REDACTED]' : slot.value;
             this.send({ type: 'stateSnapshot', target, value: valueToSend });
             this.lastSentValues.set(target, JSON.stringify(valueToSend));
           }
@@ -713,7 +720,7 @@ class AgentWebSocketManagerImpl {
         const slot = entry?.stateSlots.find((s) => s.key === stateKey);
 
         if (slot) {
-          const valueToSend = slot.sensitive ? '[REDACTED]' : slot.value;
+          const valueToSend = (slot.sensitive && slot.value) ? '[REDACTED]' : slot.value;
           this.send({ type: 'stateSnapshot', target: command.target, value: valueToSend });
           this.send({ type: 'commandAck', commandId: command.commandId, success: true });
         } else {

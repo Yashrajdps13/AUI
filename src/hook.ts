@@ -44,7 +44,7 @@ export function useBridgeState<S>(
   // Generate or retrieve a stable, unique runtime ID for this component instance.
   // We unconditionally call useId to satisfy React's rule of hooks, but we only store/use the
   // ID from hookIndex === 0 for all hooks within the same component instance.
-  const backupId = useId();
+  const backupId = useId().replace(/:/g, '');
   let instanceId: string;
   if (hookIndex === 0) {
     instanceId = backupId;

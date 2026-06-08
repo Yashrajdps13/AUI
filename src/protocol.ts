@@ -56,6 +56,7 @@ export interface CommandAuditEntry {
  * Commands received from the Agent (Agent -> Bridge).
  */
 export type AgentCommand =
+  | { type: 'agentStatus'; status: 'idle' | 'working' | 'succeeded' | 'failed'; commandId?: string }
   | { type: 'setState'; commandId: string; target: string; value: unknown }
   | { type: 'dispatchEvent'; commandId: string; target: string; event: 'click' | 'change' | 'focus'; payload?: unknown }
   | { type: 'queryState'; commandId: string; target: string }

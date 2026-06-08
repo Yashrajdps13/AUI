@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest';
 import { BridgeStore } from './store.js';
 import { ComponentEntry, FiberNode } from './types.js';
@@ -148,5 +149,29 @@ describe('BridgeStore', () => {
     const ssrSnapshot2 = BridgeStore.getServerSnapshot();
     expect(ssrSnapshot1.size).toBe(0);
     expect(ssrSnapshot1).toBe(ssrSnapshot2); // Reference stability is critical for SSR
+  });
+
+  it('should support agent status updates and document body class toggles', () => {
+    // Initial status should be 'idle'
+    expect(BridgeStore.getAgentStatus()).toBe('idle');
+    expect(document.body.className).not.toContain('aui-agent-');
+
+    // Change status to 'working'
+    BridgeStore.setAgentStatus('working');
+    expect(BridgeStore.getAgentStatus()).toBe('working');
+    expect(document.body.classList.contains('aui-agent-working')).toBe(true);
+    expect(document.body.classList.contains('aui-agent-succeeded')).toBe(false);
+
+    // Change status to 'succeeded'
+    BridgeStore.setAgentStatus('succeeded');
+    expect(BridgeStore.getAgentStatus()).toBe('succeeded');
+    expect(document.body.classList.contains('aui-agent-succeeded')).toBe(true);
+    expect(document.body.classList.contains('aui-agent-working')).toBe(false);
+
+    // Disconnect agent should reset status to 'idle'
+    BridgeStore.setAgentConnected(true);
+    BridgeStore.setAgentConnected(false);
+    expect(BridgeStore.getAgentStatus()).toBe('idle');
+    expect(document.body.classList.contains('aui-agent-succeeded')).toBe(false);
   });
 });

@@ -21,9 +21,15 @@ bridgeZustand('AuthStore', authStore, {
 
 export default function App() {
   // State slots with standard React hooks.
+  /**
+   * The username input field. Set this to the user's login username.
+   */
   const [username, setUsername] = useState('agent_user');
   
-  /** @sensitive */
+  /**
+   * The social security number input field. Set this to verify user identity.
+   * @sensitive
+   */
   const [ssn, setSsn] = useState('');
 
   const [auditLog, setAuditLog] = useState([]);
@@ -43,7 +49,7 @@ export default function App() {
 
   const handleFormSubmit = (e) => {
     e.preventDefault();
-    alert(`Form submitted locally! Username: ${username}`);
+    console.log(`Form submitted locally! Username: ${username}`);
   };
 
   return (

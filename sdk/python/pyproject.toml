@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "react-agent-bridge"
+version = "0.1.0"
+description = "Python SDK & reactive runtime for react-agent-bridge"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+    "websockets>=11.0",
+    "pydantic>=2.0",
+    "watchfiles>=0.19.0",
+    "litellm>=1.0.0"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["react_agent_bridge*"]

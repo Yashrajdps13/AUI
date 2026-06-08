@@ -34,13 +34,13 @@ export function extractInstanceId(fiber: any): string | null {
   while (hook) {
     const val = hook.memoizedState;
     if (typeof val === 'string' && USE_ID_PATTERN.test(val)) {
-      return val;
+      return val.replace(/:/g, '');
     }
     // Fallback: search within arrays if the structure differs
     if (Array.isArray(val)) {
       for (const item of val) {
         if (typeof item === 'string' && USE_ID_PATTERN.test(item)) {
-          return item;
+          return item.replace(/:/g, '');
         }
       }
     }

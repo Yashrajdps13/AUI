@@ -8,6 +8,7 @@ class BridgeStoreImpl {
   private listeners: Set<() => void> = new Set();
   private refCounts: Map<string, Set<number>> = new Map();
   private agentConnected: boolean = false;
+  private agentStatus: 'idle' | 'working' | 'succeeded' | 'failed' = 'idle';
 
   /**
    * Returns true if the agent is currently connected via websocket.
@@ -17,11 +18,38 @@ class BridgeStoreImpl {
   };
 
   /**
+   * Returns the current status of the agent.
+   */
+  getAgentStatus = (): 'idle' | 'working' | 'succeeded' | 'failed' => {
+    return this.agentStatus;
+  };
+
+  /**
    * Sets the agent connection status and notifies subscribers.
    */
   setAgentConnected(connected: boolean): void {
     if (this.agentConnected === connected) return;
     this.agentConnected = connected;
+    if (!connected) {
+      this.setAgentStatus('idle');
+    }
+    this.notify();
+  }
+
+  /**
+   * Sets the agent status and toggles body CSS classes.
+   */
+  setAgentStatus(status: 'idle' | 'working' | 'succeeded' | 'failed'): void {
+    if (this.agentStatus === status) return;
+    this.agentStatus = status;
+
+    if (typeof document !== 'undefined') {
+      document.body.classList.remove('aui-agent-working', 'aui-agent-succeeded', 'aui-agent-failed');
+      if (status !== 'idle') {
+        document.body.classList.add(`aui-agent-${status}`);
+      }
+    }
+
     this.notify();
   }
 
@@ -270,6 +298,18 @@ export function useIsAgentConnected(): boolean {
     BridgeStore.subscribe,
     BridgeStore.isAgentConnected,
     () => false
+  );
+}
+
+/**
+ * React hook to retrieve and subscribe to the live agent status.
+ * Safe to use in Concurrent Mode and SSR environments.
+ */
+export function useAgentStatus(): 'idle' | 'working' | 'succeeded' | 'failed' {
+  return useSyncExternalStore(
+    BridgeStore.subscribe,
+    BridgeStore.getAgentStatus,
+    () => 'idle'
   );
 }
 
