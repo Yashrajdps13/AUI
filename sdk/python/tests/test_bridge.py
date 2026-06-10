@@ -589,6 +589,47 @@ def test_wait_for_parameterization_and_replay_failure():
     assert cmd["timeoutMs"] == 5000
 
 
+def test_target_mounted_rule_call_action_and_wait_for():
+    from react_agent_bridge.core.rules.registry import RuleRegistry
+    from react_agent_bridge.core.rules.engine import RulesEngine
+    from react_agent_bridge.core.graph.state_graph import ApplicationStateGraph
+    from react_agent_bridge.core.models import SerializedComponentEntry, RegistryDeltaMessage
+    from react_agent_bridge.core.rules.base_rules import target_mounted_rule
+
+    registry = RuleRegistry()
+    registry.add_rule(target_mounted_rule)
+    engine = RulesEngine(registry)
+    graph = ApplicationStateGraph()
+
+    comp = SerializedComponentEntry(
+        id="ZustandStore#AppStore", displayName="AppStore", mountedAt=100, route="/", actions=["loginAction"]
+    )
+    graph.apply_delta(RegistryDeltaMessage(added=[comp], removed=[], updated=[]))
+
+    # Test callAction target parsing
+    cmd_call = {"type": "callAction", "target": "ZustandStore#AppStore.loginAction"}
+    res_call = engine.evaluate(cmd_call, graph)
+    assert res_call.valid is True
+
+    # Test waitFor target parsing with component slot
+    cmd_wait_slot = {"type": "waitFor", "target": "ZustandStore#AppStore.isAuthenticated"}
+    res_wait_slot = engine.evaluate(cmd_wait_slot, graph)
+    assert res_wait_slot.valid is True
+
+    # Test waitFor target parsing with plain component (which exists)
+    cmd_wait_comp = {"type": "waitFor", "target": "ZustandStore#AppStore"}
+    res_wait_comp = engine.evaluate(cmd_wait_comp, graph)
+    assert res_wait_comp.valid is True
+
+    # Test invalid target formatting
+    cmd_invalid = {"type": "callAction", "target": "NonExistentStore.loginAction"}
+    res_invalid = engine.evaluate(cmd_invalid, graph)
+    assert res_invalid.valid is False
+    assert len(res_invalid.violations) == 1
+    assert res_invalid.violations[0].rule_name == "TargetMountedRule"
+
+
+
 
 
 

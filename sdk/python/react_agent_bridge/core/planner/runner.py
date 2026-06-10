@@ -497,7 +497,9 @@ CRITICAL RULES - follow these exactly:
 8. Toggle buttons (e.g. session checkboxes) are ON/OFF — clicking again will REMOVE the item. If the condition is already satisfied, do NOT click that button again.
 9. Respond ONLY with a valid JSON array. No markdown fences, no extra text.
 10. Do NOT perform setState on state slots whose corresponding input/interactive elements are not currently visible in the COMPONENT REGISTRY. For example, if a form field input (such as cardNumber or selectedSessions) is not rendered on the current screen, do not set its state slot value until you navigate to the screen where it is rendered.
-11. If the required component is not mounted yet, wait for it to appear. Never plan actions on unmounted components."""
+11. If the required component is not mounted yet, wait for it to appear. Never plan actions on unmounted components.
+12. Only call store actions via callAction when you have complete knowledge of their expected arguments and behavior. If an action's arguments are not documented, or if you are logging in or submitting forms, prefer interacting with visible DOM/UI elements (e.g. setting state slots corresponding to input fields and clicking buttons via dispatchEvent) instead of calling store actions directly.
+13. Always enter sensitive inputs (like passwords) using the corresponding input element's state slot and dispatching the 'change' and 'click' events on the form button."""
         if self.business_context:
             system_prompt += f"\n\nBUSINESS CONTEXT & CRITICAL RULES:\n{self.business_context}"
 
