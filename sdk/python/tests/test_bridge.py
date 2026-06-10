@@ -523,6 +523,73 @@ def test_goal_condition_contains_and_changed():
     assert cond_contains_neg.evaluate(graph) is False
 
 
+def test_wait_for_parameterization_and_replay_failure():
+    from react_agent_bridge.core.client import ReactAgentBridge
+    from react_agent_bridge.core.planner.runner import AgentRunner
+    from react_agent_bridge.core.planner.goal import Goal, GoalCondition
+    from react_agent_bridge.discovery.traces import GoldenTrace, GoldenTraceStep
+
+    bridge = ReactAgentBridge(host="localhost", port=8000)
+    runner = AgentRunner(bridge, model="mock-model")
+
+    # Mock components in bridge graph
+    from react_agent_bridge.core.models import SerializedComponentEntry, SerializedStateSlot, RegistryDeltaMessage
+    slot_logs = SerializedStateSlot(key="consoleLogs", hookIndex=0)
+    comp = SerializedComponentEntry(id="Layout#r1", displayName="Layout", mountedAt=1000, route="/", stateSlots=[slot_logs])
+    bridge.graph.apply_delta(RegistryDeltaMessage(added=[comp], removed=[], updated=[]))
+
+    trace_step = GoldenTraceStep(
+        command_type="waitFor",
+        target="Layout#r1.consoleLogs",
+        value=5000,
+        condition={"operator": "contains", "value": "Project 'Nebula Core' created"},
+        post_state_snapshot={"Layout#r1.consoleLogs": ["Project 'Nebula Core' created"]}
+    )
+    trace = GoldenTrace(
+        trace_id="test-trace-id",
+        workflow_name="Test Workflow",
+        goal_description="Test Goal",
+        recorded_at=1000.0,
+        application_version_hash="hash",
+        precondition_state={},
+        steps=[trace_step],
+        postcondition_state={"Layout#r1.consoleLogs": ["Project 'Nebula Core' created"]},
+        execution_time_ms=100.0,
+        llm_calls_made=0
+    )
+
+    goal = Goal(
+        description="Test Goal",
+        success_conditions=[
+            GoalCondition(target="Layout#r1.consoleLogs", operator="contains", value="Project 'Synergy Alpha' created")
+        ]
+    )
+
+    state = {
+        "query": "Test Goal",
+        "goal": goal,
+        "registry": {},
+        "values": {},
+        "commands": [],
+        "action_history": [],
+        "consecutive_ineffective_count": 0,
+        "step_count": 0,
+        "active_trace": trace,
+        "trace_step_index": 0,
+        "llm_calls_made": 0
+    }
+
+    # Test parameterization replaces 'Nebula Core' with 'Synergy Alpha' in condition value
+    res = runner._plan_node(state)
+    cmd = res["commands"][0]
+    assert cmd["type"] == "waitFor"
+    assert cmd["target"] == "Layout#r1.consoleLogs"
+    assert cmd["condition"]["operator"] == "contains"
+    assert cmd["condition"]["value"] == "Project 'Synergy Alpha' created"
+    assert cmd["timeoutMs"] == 5000
+
+
+
 
 
 

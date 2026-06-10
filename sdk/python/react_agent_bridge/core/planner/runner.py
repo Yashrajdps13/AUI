@@ -144,7 +144,7 @@ class AgentRunner:
                 
             val_map = {}
             for cond in current_goal.success_conditions:
-                if cond.operator not in ["equals", "includes"]:
+                if cond.operator not in ["equals", "includes", "contains"]:
                     continue
                 parts = cond.target.rsplit(".", 1)
                 if len(parts) != 2:
@@ -204,6 +204,43 @@ class AgentRunner:
                             selector = selector.replace(str(orig_val), str(curr_val))
                             
                 cmd["payload"] = selector
+            elif step.command_type == "waitFor":
+                cond = dict(step.condition) if step.condition else {}
+                if "value" in cond:
+                    val = cond["value"]
+                    if "." in step.target:
+                        target_comp, target_slot = step.target.rsplit(".", 1)
+                        target_comp_clean = target_comp.split("#", 1)[0]
+                        matched_val = False
+                        for orig_target, (orig_val, curr_val) in val_map.items():
+                            orig_comp, orig_slot = orig_target.rsplit(".", 1)
+                            orig_comp_clean = orig_comp.split("#", 1)[0]
+                            if orig_comp_clean == target_comp_clean and orig_slot == target_slot:
+                                val = curr_val
+                                matched_val = True
+                                break
+                        if not matched_val and isinstance(val, str):
+                            for orig_target, (orig_val, curr_val) in val_map.items():
+                                if isinstance(orig_val, list) and isinstance(curr_val, list):
+                                    for o_i, c_i in zip(orig_val, curr_val):
+                                        if str(o_i) in val:
+                                            val = val.replace(str(o_i), str(c_i))
+                                else:
+                                    if str(orig_val) in val:
+                                        val = val.replace(str(orig_val), str(curr_val))
+                    elif isinstance(val, str):
+                        for orig_target, (orig_val, curr_val) in val_map.items():
+                            if isinstance(orig_val, list) and isinstance(curr_val, list):
+                                for o_i, c_i in zip(orig_val, curr_val):
+                                    if str(o_i) in val:
+                                        val = val.replace(str(o_i), str(c_i))
+                            else:
+                                if str(orig_val) in val:
+                                    val = val.replace(str(orig_val), str(curr_val))
+                    cond["value"] = val
+                cmd["condition"] = cond
+                if step.value is not None:
+                    cmd["timeoutMs"] = step.value
             else:
                 if step.value is not None:
                     cmd["value"] = step.value
@@ -738,7 +775,7 @@ CRITICAL RULES - follow these exactly:
                 if trace_step_index < len(steps):
                     step = steps[trace_step_index]
                     # Compare actual post_state values_after with step's expected post_state_snapshot
-                    mismatch = False
+                    mismatch = not success
                     cleaned_after = {}
                     for k_after, val_after in values_after.items():
                         if "." in k_after:
@@ -898,10 +935,11 @@ CRITICAL RULES - follow these exactly:
                             steps.append(GoldenTraceStep(
                                 command_type=cmd["type"],
                                 target=cmd["target"],
-                                value=cmd.get("value"),
+                                value=cmd.get("timeoutMs") if cmd["type"] == "waitFor" else cmd.get("value"),
                                 event=cmd.get("event"),
                                 selector=cmd.get("payload"),
                                 args=cmd.get("args"),
+                                condition=cmd.get("condition"),
                                 pre_state_snapshot=h.get("pre_state", {}),
                                 post_state_snapshot=h.get("post_state", {}),
                                 settle_time_ms=h.get("settle_time_ms", 0.0)

@@ -17,6 +17,7 @@ class GoldenTraceStep:
     event: Optional[str] = None
     selector: Optional[str] = None
     args: Optional[List[Any]] = None
+    condition: Optional[Dict[str, Any]] = None
     pre_state_snapshot: Dict[str, Any] = field(default_factory=dict)
     post_state_snapshot: Dict[str, Any] = field(default_factory=dict)
     settle_time_ms: float = 0.0
@@ -81,12 +82,17 @@ class GoldenTraceStore:
                     event TEXT,
                     selector TEXT,
                     args_json TEXT,
+                    condition_json TEXT,
                     pre_state_snapshot_json TEXT NOT NULL,
                     post_state_snapshot_json TEXT NOT NULL,
                     settle_time_ms REAL NOT NULL,
                     FOREIGN KEY (trace_id) REFERENCES golden_traces(trace_id) ON DELETE CASCADE
                 )
             """)
+            try:
+                cursor.execute("ALTER TABLE golden_trace_steps ADD COLUMN condition_json TEXT")
+            except sqlite3.OperationalError:
+                pass
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_traces_wf ON golden_traces(workflow_name)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_trace_steps_id ON golden_trace_steps(trace_id)")
             conn.commit()
@@ -123,9 +129,9 @@ class GoldenTraceStore:
                 cursor.execute("""
                     INSERT INTO golden_trace_steps (
                         trace_id, step_index, command_type, target, value_json,
-                        event, selector, args_json, pre_state_snapshot_json,
+                        event, selector, args_json, condition_json, pre_state_snapshot_json,
                         post_state_snapshot_json, settle_time_ms
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     trace.trace_id,
                     idx,
@@ -135,6 +141,7 @@ class GoldenTraceStore:
                     s.event,
                     s.selector,
                     json.dumps(s.args) if s.args is not None else None,
+                    json.dumps(s.condition) if s.condition is not None else None,
                     json.dumps(s.pre_state_snapshot),
                     json.dumps(s.post_state_snapshot),
                     s.settle_time_ms
@@ -234,7 +241,7 @@ class GoldenTraceStore:
 
                 # Load steps first to extract write-preconditions
                 cursor.execute("""
-                    SELECT command_type, target, value_json, event, selector, args_json,
+                    SELECT command_type, target, value_json, event, selector, args_json, condition_json,
                            pre_state_snapshot_json, post_state_snapshot_json, settle_time_ms
                     FROM golden_trace_steps
                     WHERE trace_id = ?
@@ -250,9 +257,10 @@ class GoldenTraceStore:
                         event=sr[3],
                         selector=sr[4],
                         args=json.loads(sr[5]) if sr[5] else None,
-                        pre_state_snapshot=json.loads(sr[6]),
-                        post_state_snapshot=json.loads(sr[7]),
-                        settle_time_ms=sr[8]
+                        condition=json.loads(sr[6]) if sr[6] else None,
+                        pre_state_snapshot=json.loads(sr[7]),
+                        post_state_snapshot=json.loads(sr[8]),
+                        settle_time_ms=sr[9]
                     ))
                 
                 # Check precondition applicability
