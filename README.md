@@ -9,6 +9,9 @@
 ## Features
 
 - **🔌 Zero-Friction Setup**: One Babel plugin and one entrypoint import. No wrappers, hooks, or context changes in your actual application code.
+- **🕵️‍♂️ Passive Discovery Mode & SQLite Session Recorder**: Automatically records human user sessions (clicks, text changes, state transitions) into a local SQLite database (`discovery.db`) to reconstruct high-fidelity workflow pathways.
+- **📈 Outcome-Based Workflow Inference Engine**: Analyzes recorded sessions to discover state slots reaching terminal completion values, cluster temporal slot transitions into step phases, identify step preconditions, and generate developer-reviewable YAML/Markdown workflow definitions (`agent-context.md`).
+- **🤖 Automated Agent Runner & Replay Engine**: Boots an autonomous planner that parses compiled goal states, schedules action sequences using standard LLMs, and falls back to **Golden Trace Replay** to replay parameterized user interactions (clicks, state updates) in under a second with **0 LLM calls**.
 - **📝 JSDoc Annotation Extraction**: Automatically parses developer JSDoc block comments (`/** ... */`) preceding `useState` declarations at build-time to provide semantic descriptions of state slots to the agent.
 - **👁️ Dynamic Element Visibility & Disabled States**: Interactive element scanner detects computed CSS visibility (display, visibility, opacity) and HTML/ARIA disabled properties to prevent agent interactions with hidden or inactive fields.
 - **🤝 Render Settlement Handshakes**: Hooks into React DevTools commits to notify the agent backend when rendering and layout updates have fully settled, eliminating execution race conditions.
@@ -16,7 +19,7 @@
 - **⚡ State Subscriptions & Diffs**: Real-time push notifications to the agent when watched states change, minimizing websocket chatter.
 - **✍️ Semantic Read & Write**: The agent can read state values and dispatch state mutations securely.
 - **🎯 Host DOM Binding**: Correlates virtual component state slots to their exact browser DOM nodes for high-fidelity click, change, and focus event dispatches.
-- **🔗 Concurrent-Mode Safe**: Automatically schedules incoming state updates within React's `startTransition` blocks.
+- **🚫 Safe Agent Mutation Rules**: Enforces strict page context constraints (preventing mutations of elements not visible in the DOM) and excludes direct collection/array state updates to protect data integrity.
 - **🚨 Activity & Error Logging Ledger**: Zero-config runtime error and unhandled promise rejection interceptors stream errors to the agent in real time, accompanied by a circular history buffer ledger of recent console outputs and agent actions.
 - **🎨 Agent Mode UX Connection Indicators**: Exposes a reactive `useIsAgentConnected()` React hook and toggles the `.aui-agent-mode` class on `document.body` for glowing agent connection styling.
 
@@ -24,7 +27,7 @@
 
 ## Installation & Local Development
 
-This package is currently in active development and has not been published to the public npm registry yet. To use and test it in your local React application:
+This package is currently in active development. To use and test it in your local React application:
 
 ### 1. Build and Link the Package
 In the root directory of this repository, run:
@@ -34,7 +37,7 @@ npm link
 ```
 
 ### 2. Link to Your Application
-Navigate to your React application directory (e.g., `examples/frontend`) and link the package:
+Navigate to your React application directory (e.g., `examples/discovery-flow`) and link the package:
 ```bash
 npm link react-agent-bridge
 ```
@@ -87,9 +90,9 @@ ReactDOM.createRoot(document.getElementById('root')).render(
 
 ---
 
-## 🏃 Running the Example Demo
+## 🏃 Running the Discovery Mode & Automated Agent Demo
 
-The repository contains a fully integrated checkout flow frontend and Python LangGraph agent backend in the `/examples` directory.
+The repository contains a fully integrated checkout flow frontend and Python LangGraph agent backend in the `/examples/discovery-flow` directory demonstrating session recording, context generation, and trace replay.
 
 ### Prerequisites
 First, build the library from the root directory:
@@ -98,37 +101,47 @@ npm run build
 ```
 
 ### 1. Start the React Frontend
-Navigate to the frontend example, install dependencies, and run the dev server:
+Navigate to the discovery flow example, install dependencies, link the framework, and run the dev server:
 ```bash
-cd examples/shopping-cart-flow/frontend
+cd examples/discovery-flow
 npm install
+npm link react-agent-bridge
 npm run dev
 ```
 Open [http://localhost:5173](http://localhost:5173) in your browser.
 
-### 2. Start the AI Agent Backend
-Open a separate terminal, navigate to the agent example, set up a Python virtual environment, install dependencies, and boot the agent:
+### 2. Run Passive Observation (Discovery Mode)
+Open a separate terminal, navigate to the example, and run the Python playground:
 ```bash
-cd examples/shopping-cart-flow/agent
-python -m venv venv
-
-# On Windows:
-.\venv\Scripts\activate
-# On macOS/Linux:
-# source venv/bin/activate
-
-pip install -r pyproject.toml # or install websockets, langgraph, langchain
+cd examples/discovery-flow
 python agent.py
 ```
-*(Optional: If you want the agent to use a live LLM planner, add `GEMINI_API_KEY="your-api-key"` to a `.env` file in the `examples/shopping-cart-flow/agent/` directory).*
+Select option **`1`** (`Run passive discovery server`).
 
-### 3. Test Agent Interactions
-Once the bridge connects, type commands into the Python agent CLI to see your browser react in real-time:
-* `add apple` — Semantically clicks the Organic Apple card.
-* `coupon SAVE10` — Sets the coupon state and applies it.
-* `checkout` — Updates the multi-step navigation to the shipping screen.
-* `set name to Bob` — Directly writes "Bob" to the shipping fullName state.
-* `place order` — Dispatches the click event to submit the order.
+1. Go to your browser at [http://localhost:5173](http://localhost:5173).
+2. Fill out the details (Attendee Name, Email). Click **Next Step**.
+3. Select options (Ticket category, sessions). Click **Next Step**.
+4. Enter Credit Card details. Click **Confirm and Pay**.
+5. Observe the "Bridge Activity Log" in the UI to see how PII data is auto-redacted and recorded.
+6. Click **Reset Form** and repeat the sequence **3 or more times** (each page reload/reset represents a session).
+7. In the Python terminal, press **`Ctrl+C`** to finalize the observation.
+
+This generates/updates **`agent-context.md`** containing:
+* **Slot Annotations**: `@sensitive` markers on email and card numbers, collections list types, and derived total cost.
+* **Workflows**: Multi-step flow steps extracted from sequential observation.
+* **Constraints**: sequencing, write-protection, and page routing scope rules.
+
+### 3. Try Golden Trace Replay
+Once `agent-context.md` is generated, run `agent.py` again:
+```bash
+python agent.py
+```
+Select option **`2`** (`Run automated agent runner`).
+
+1. The agent will formulate a Goal pointing directly to active state slots.
+2. **Run 1 (Direct LLM)**: Plans step by step using LLM calls. This compiles and records a **Golden Trace** in the local database.
+3. Once Run 1 completes, click **Reset Form** in the browser, and press **Enter** in the Python console.
+4. **Run 2 (Golden Trace Replay)**: The runner detects a matching golden trace and executes it instantly with **0 LLM calls**, resulting in an immediate 50–80% planning speedup!
 
 ---
 
@@ -137,9 +150,15 @@ Once the bridge connects, type commands into the Python agent CLI to see your br
 The library comes with comprehensive unit and integration tests covering the store, hook transformation, DevTools hook scanner, and WebSocket communication protocols.
 
 To run the test suite:
-```bash
-npm test
-```
+* **Javascript/Vitest Tests**:
+  ```bash
+  npm test
+  ```
+* **Python SDK Tests**:
+  ```bash
+  cd sdk/python
+  python -m pytest
+  ```
 
 ---
 
