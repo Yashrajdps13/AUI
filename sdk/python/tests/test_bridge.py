@@ -593,3 +593,31 @@ async def test_litellm_adapter_compile_goal_retry_feedback():
             assert goal.success_conditions[0].target == "AuthStore.isAuthenticated"
             assert goal.success_conditions[0].operator == "equals"
             assert goal.success_conditions[0].value is True
+
+
+def test_target_mounted_rule_call_action():
+    from react_agent_bridge.core.rules.registry import RuleRegistry
+    from react_agent_bridge.core.rules.engine import RulesEngine
+    from react_agent_bridge.core.graph.state_graph import ApplicationStateGraph
+    from react_agent_bridge.core.models import SerializedComponentEntry, RegistryDeltaMessage
+    from react_agent_bridge.core.rules.base_rules import target_mounted_rule
+
+    registry = RuleRegistry()
+    registry.add_rule(target_mounted_rule)
+    engine = RulesEngine(registry)
+    graph = ApplicationStateGraph()
+
+    comp = SerializedComponentEntry(
+        id="ZustandStore#AuthStore", displayName="AuthStore", mountedAt=100, route="/", stateSlots=[], actions=["loginAction"]
+    )
+    graph.apply_delta(RegistryDeltaMessage(added=[comp], removed=[], updated=[]))
+
+    # A callAction command targeting ZustandStore#AuthStore.loginAction
+    cmd = {
+        "type": "callAction",
+        "target": "ZustandStore#AuthStore.loginAction",
+        "args": []
+    }
+
+    res = engine.evaluate(cmd, graph)
+    assert res.valid is True
