@@ -166,7 +166,7 @@ class CommandDispatcher:
     async def wait_for(
         self,
         target: str,
-        operator: Literal["equals", "truthy", "falsy", "changed"],
+        operator: Literal["equals", "truthy", "falsy", "changed", "contains", "includes"],
         value: Any = None,
         timeout_ms: int = 5000,
         timeout: float = 6.0

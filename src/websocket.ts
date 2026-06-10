@@ -682,7 +682,13 @@ class AgentWebSocketManagerImpl {
   private getTargetValue(target: string): { found: boolean; value?: unknown } {
     const registry = BridgeStore.getSnapshot();
     const lastDot = target.lastIndexOf('.');
-    if (lastDot === -1) return { found: false };
+    if (lastDot === -1) {
+      const entry = registry.get(target);
+      if (entry) {
+        return { found: true, value: entry };
+      }
+      return { found: false };
+    }
 
     const componentId = target.substring(0, lastDot);
     const stateKey = target.substring(lastDot + 1);
@@ -696,11 +702,14 @@ class AgentWebSocketManagerImpl {
 
   private checkWatcherCondition(watcher: {
     target: string;
-    condition: { operator: 'equals' | 'truthy' | 'falsy' | 'changed'; value?: unknown };
+    condition: { operator: 'equals' | 'truthy' | 'falsy' | 'changed' | 'contains' | 'includes'; value?: unknown };
     initialValue: unknown;
   }): boolean {
     const { found, value } = this.getTargetValue(watcher.target);
-    if (!found) return false;
+    if (!found) {
+      if (watcher.condition.operator === 'falsy') return true;
+      return false;
+    }
 
     const op = watcher.condition.operator;
     const targetVal = watcher.condition.value;
@@ -719,6 +728,19 @@ class AgentWebSocketManagerImpl {
         return JSON.stringify(value) !== JSON.stringify(watcher.initialValue);
       }
       return value !== watcher.initialValue;
+    } else if (op === 'contains' || op === 'includes') {
+      if (typeof value === 'string' && typeof targetVal === 'string') {
+        return value.includes(targetVal);
+      }
+      if (Array.isArray(value)) {
+        return value.some((item) => {
+          if (typeof item === 'object' && item !== null) {
+            return JSON.stringify(item).includes(String(targetVal));
+          }
+          return String(item).includes(String(targetVal));
+        });
+      }
+      return false;
     }
     return false;
   }
@@ -1407,18 +1429,23 @@ class AgentWebSocketManagerImpl {
 
       case 'waitFor': {
         const { found, value } = this.getTargetValue(command.target);
+        const op = command.condition.operator;
+        const targetVal = command.condition.value;
+
         if (!found) {
+          if (op === 'falsy') {
+            this.send({ type: 'commandAck', commandId: command.commandId, success: true });
+            return;
+          }
           this.send({
             type: 'commandAck',
             commandId: command.commandId,
             success: false,
-            error: `Target state slot "${command.target}" not found in registry.`,
+            error: `Target state slot or component "${command.target}" not found in registry.`,
           });
           return;
         }
 
-        const op = command.condition.operator;
-        const targetVal = command.condition.value;
         let isSatisfied = false;
 
         if (op === 'equals') {
@@ -1433,6 +1460,17 @@ class AgentWebSocketManagerImpl {
           isSatisfied = !value;
         } else if (op === 'changed') {
           isSatisfied = false;
+        } else if (op === 'contains' || op === 'includes') {
+          if (typeof value === 'string' && typeof targetVal === 'string') {
+            isSatisfied = value.includes(targetVal);
+          } else if (Array.isArray(value)) {
+            isSatisfied = value.some((item) => {
+              if (typeof item === 'object' && item !== null) {
+                return JSON.stringify(item).includes(String(targetVal));
+              }
+              return String(item).includes(String(targetVal));
+            });
+          }
         }
 
         if (isSatisfied) {
