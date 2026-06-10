@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { HashRouter as Router, Routes, Route, Link, useNavigate, useParams, Navigate, useLocation } from 'react-router-dom';
 import { create } from 'zustand';
-import { useIsAgentConnected } from 'react-agent-bridge';
+import { useIsAgentConnected, bridgeZustand } from 'react-agent-bridge';
 import './index.css';
 
 // ==========================================
@@ -59,6 +59,10 @@ export const useStore = create((set, get) => ({
     notifications
   }))
 }));
+
+bridgeZustand('AppStore', useStore, {
+  sensitiveKeys: ['password']
+});
 
 // ==========================================
 // 2. Global Event Logger for UI console

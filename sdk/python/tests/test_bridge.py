@@ -489,6 +489,41 @@ async def test_plan_node_stuck_warnings_rejection():
         assert "You MUST read the COMPONENT REGISTRY and CURRENT STATE VALUES" in system_content
 
 
+def test_goal_condition_contains_and_changed():
+    from react_agent_bridge.core.planner.goal import GoalCondition
+    from react_agent_bridge.core.graph.state_graph import ApplicationStateGraph
+    from react_agent_bridge.core.models import SerializedComponentEntry, SerializedStateSlot, RegistryDeltaMessage
+
+    graph = ApplicationStateGraph()
+    slot_logs = SerializedStateSlot(key="consoleLogs", hookIndex=0)
+    slot_err = SerializedStateSlot(key="error", hookIndex=1)
+    comp = SerializedComponentEntry(
+        id="Layout#r1",
+        displayName="Layout",
+        mountedAt=1000,
+        route="/",
+        stateSlots=[slot_logs, slot_err]
+    )
+    graph.apply_delta(RegistryDeltaMessage(added=[comp], removed=[], updated=[]))
+
+    # Test changed operator on default empty values
+    graph.update_state_value("Layout#r1.consoleLogs", [])
+    cond_changed = GoalCondition(target="Layout#r1.consoleLogs", operator="changed", value="None")
+    assert cond_changed.evaluate(graph) is False
+
+    # Update value and test changed operator
+    graph.update_state_value("Layout#r1.consoleLogs", ["Created project Alpha"])
+    assert cond_changed.evaluate(graph) is True
+
+    # Test contains operator
+    cond_contains = GoalCondition(target="Layout#r1.consoleLogs", operator="contains", value="Created project Alpha")
+    assert cond_contains.evaluate(graph) is True
+
+    cond_contains_neg = GoalCondition(target="Layout#r1.consoleLogs", operator="contains", value="Completed task")
+    assert cond_contains_neg.evaluate(graph) is False
+
+
+
 
 
 
