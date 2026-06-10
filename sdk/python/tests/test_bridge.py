@@ -407,6 +407,89 @@ async def test_safe_subscribe_handles_exceptions():
     bridge.subscribe.assert_called_once_with("DashboardView#r9")
 
 
+@pytest.mark.asyncio
+async def test_execute_node_sanitizer_rejection():
+    from react_agent_bridge.core.client import ReactAgentBridge
+    from react_agent_bridge.core.planner.runner import AgentRunner
+    from react_agent_bridge.core.planner.goal import Goal
+    
+    bridge = ReactAgentBridge(host="localhost", port=8000)
+    runner = AgentRunner(bridge, model="mock-model")
+    
+    # State has no mounted components, so allowed sets will be empty.
+    # Proposing a setState command should trigger a sanitizer rejection.
+    state = {
+        "query": "Set slot to 42",
+        "goal": Goal(description="Set slot to 42", success_conditions=[]),
+        "registry": {},
+        "values": {},
+        "commands": [{"type": "setState", "target": "SomeComponent.slot", "value": 42}],
+        "action_history": [],
+        "consecutive_ineffective_count": 0,
+        "step_count": 0,
+        "active_trace": None,
+        "trace_step_index": 0
+    }
+    
+    result = await runner._execute_node(state)
+    
+    assert result["consecutive_ineffective_count"] == 1
+    assert result["step_count"] == 1
+    assert len(result["action_history"]) == 1
+    assert result["action_history"][0]["rejected"] is True
+    assert "Command rejected" in result["action_history"][0]["error"]
+
+
+@pytest.mark.asyncio
+async def test_plan_node_stuck_warnings_rejection():
+    from react_agent_bridge.core.client import ReactAgentBridge
+    from react_agent_bridge.core.planner.runner import AgentRunner
+    from react_agent_bridge.core.planner.goal import Goal
+    from unittest.mock import patch
+    
+    bridge = ReactAgentBridge(host="localhost", port=8000)
+    runner = AgentRunner(bridge, model="mock-model")
+    
+    # Simulate a history with 3 consecutive rejections for the same target
+    history = [
+        {"command": {"type": "setState", "target": "LoginView#r5.password", "value": "secret"}, "rejected": True, "error": "Command rejected: target LoginView#r5.password is not in the registry"},
+        {"command": {"type": "setState", "target": "LoginView#r5.password", "value": "secret"}, "rejected": True, "error": "Command rejected: target LoginView#r5.password is not in the registry"},
+        {"command": {"type": "setState", "target": "LoginView#r5.password", "value": "secret"}, "rejected": True, "error": "Command rejected: target LoginView#r5.password is not in the registry"},
+    ]
+    
+    state = {
+        "query": "Log in",
+        "goal": Goal(description="Log in", success_conditions=[]),
+        "registry": {},
+        "values": {},
+        "commands": [],
+        "action_history": history,
+        "consecutive_ineffective_count": 3,
+        "step_count": 3,
+        "active_trace": None,
+        "trace_step_index": 0,
+        "llm_calls_made": 0
+    }
+    
+    # We patch litellm.completion to return a mock response
+    from unittest.mock import MagicMock
+    mock_res = MagicMock()
+    mock_res.choices = [MagicMock(message=MagicMock(content="[]"))]
+    
+    with patch("litellm.completion", return_value=mock_res) as mock_complete:
+        res = runner._plan_node(state)
+        
+        # Verify call arguments
+        called_args = mock_complete.call_args[1]
+        messages = called_args["messages"]
+        system_content = messages[0]["content"]
+        
+        # The warning should be included in the system prompt
+        assert "WARNING: The command target 'LoginView#r5.password' was rejected" in system_content
+        assert "You MUST read the COMPONENT REGISTRY and CURRENT STATE VALUES" in system_content
+
+
+
 
 
 

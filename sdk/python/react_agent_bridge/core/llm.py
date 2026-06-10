@@ -248,7 +248,7 @@ Output strictly valid JSON only. Do not wrap in markdown blocks or include expla
         CRITICAL RULES FOR GOAL COMPILATION:
         1. For success_conditions and failure_conditions, the "target" field MUST be chosen strictly from the "Allowed Target State Slots" list. Do NOT guess, invent, or use any target path that is not present in that list.
         2. You MUST use the exact strings from "Allowed Target State Slots" as the target in your conditions. For example, if the list contains "App#r9.attendeeName", use exactly "App#r9.attendeeName", NOT "App.attendeeName" or "PassesStore.pass_holder_name".
-        3. If the user query explicitly mentions inputs, credentials, or values (e.g. "John Doe" or "john@test.com" or card "5555666677778888"), you MUST include success conditions verifying that the corresponding component UI state slots from the allowed list are updated to those expected values, in addition to the final outcome condition.
+        3. Do NOT include temporary input values or intermediate form fields (such as login password, search query, or form inputs) in the success_conditions if the user moves beyond that step or if the form/component unmounts or is reset. Instead, focus success conditions on final persistent state outcomes (e.g. user being authenticated in the AuthStore/Layout component, project list including the new project, task marked complete). Only include input values in success conditions if the goal is explicitly just to type a value and verify it remains visible on the current un-navigated screen.
         
         CRITICAL RULES FOR FAILURE CONDITIONS:
         1. Failure conditions are evaluated at every single step, INCLUDING step 0 (before the agent has executed any actions).

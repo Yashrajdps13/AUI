@@ -359,7 +359,12 @@ class AgentRunner:
         history_lines = []
         for h_idx, item in enumerate(state["action_history"]):
             cmd = item["command"]
-            changed = "produced state change" if item["state_changed"] else "ineffective (no state change)"
+            if item.get("rejected"):
+                changed = f"REJECTED - {item.get('error')}"
+            elif item.get("skipped"):
+                changed = "SKIPPED (already has value)"
+            else:
+                changed = "produced state change" if item["state_changed"] else "ineffective (no state change)"
             history_lines.append(f"{h_idx+1}. Command: {json.dumps(cmd)} -> Result: {changed}")
         history_str = "\n".join(history_lines) if history_lines else "No actions executed yet."
 
@@ -455,6 +460,33 @@ CRITICAL RULES - follow these exactly:
         if self.business_context:
             system_prompt += f"\n\nBUSINESS CONTEXT & CRITICAL RULES:\n{self.business_context}"
 
+        # Stuck-detection for consecutive target rejections
+        target_rejections = {}
+        for hist_item in reversed(state["action_history"]):
+            hist_cmd = hist_item["command"]
+            h_target = hist_cmd.get("target")
+            if not h_target:
+                continue
+            if h_target not in target_rejections:
+                target_rejections[h_target] = {"count": 0, "active": True}
+            
+            if target_rejections[h_target]["active"]:
+                if hist_item.get("rejected"):
+                    target_rejections[h_target]["count"] += 1
+                else:
+                    target_rejections[h_target]["active"] = False
+                    
+        reframe_warnings = []
+        for h_target, info in target_rejections.items():
+            if info["count"] >= 3:
+                reframe_warnings.append(
+                    f"WARNING: The command target '{h_target}' was rejected {info['count']} times in a row because it was not found in the current component registry. "
+                    "This component or state slot is not currently mounted (it may have been unmounted due to a successful action, such as logging in or navigating). "
+                    "You MUST read the COMPONENT REGISTRY and CURRENT STATE VALUES above, identify which components are actually mounted right now, and plan your actions using only the currently mounted elements."
+                )
+        if reframe_warnings:
+            system_prompt += "\n\n" + "\n".join(reframe_warnings)
+
         if state["consecutive_ineffective_count"] >= self.consecutive_ineffective_limit:
             system_prompt += f"\n\nWARNING: The last {state['consecutive_ineffective_count']} consecutive actions produced NO change in application state. You are stuck! Please reason about why the previous attempts were ineffective, avoid repeating the same command parameters, and try a fundamentally different approach."
 
@@ -489,61 +521,18 @@ CRITICAL RULES - follow these exactly:
             if not isinstance(commands, list):
                 commands = [commands]
 
-            # --- Post-parse validation & sanitization ---
-            # Build flat sets of what is allowed so we can filter invalid LLM output
-            allowed_set_targets_set = set(allowed_set_targets)
-            all_allowed_selectors_set = set()
-            for sels in allowed_selectors_by_comp.values():
-                all_allowed_selectors_set.update(sels)
-
-            sanitized = []
+            # Truncate batch at the first navigation click (page change) but keep it
+            truncated = []
             for raw_cmd in commands:
                 cmd_type = raw_cmd.get("type")
-                if cmd_type == "setState":
-                    target = raw_cmd.get("target", "")
-                    if target not in allowed_set_targets_set:
-                        print(f"{YELLOW}[Sanitizer] Dropping setState with invalid target: {target!r}{RESET}")
-                        continue
-                    # Skip if the slot already holds the exact desired value.
-                    # Prevents the LLM from redundantly setting already-correct slots,
-                    # which would trigger the repetition blocker and abort the whole batch.
-                    desired_val = raw_cmd.get("value")
-                    current_val = live_values.get(target)
-                    if current_val == desired_val:
-                        print(f"{CYAN}[Sanitizer] Skipping setState on {target!r} — already has value {json.dumps(desired_val)}.{RESET}")
-                        continue
-                elif cmd_type == "callAction":
-                    target = raw_cmd.get("target", "")
-                    # callAction MUST have a dot (ComponentID.actionName)
-                    if "." not in target:
-                        print(f"{YELLOW}[Sanitizer] Dropping malformed callAction (no action name): {target!r}{RESET}")
-                        continue
-                    # Validate against allowed actions list (must be explicitly registered)
-                    if target not in allowed_call_targets:
-                        print(f"{YELLOW}[Sanitizer] Dropping callAction with unregistered action: {target!r}{RESET}")
-                        continue
-                elif cmd_type == "dispatchEvent":
-                    payload = raw_cmd.get("payload")
-                    # If payload is a selector string, validate it's in the allowed list
-                    if isinstance(payload, str) and (payload.startswith("#") or payload.startswith(".")):
-                        if payload not in all_allowed_selectors_set:
-                            print(f"{YELLOW}[Sanitizer] Dropping dispatchEvent with unknown selector: {payload!r}{RESET}")
-                            continue
-
-                sanitized.append(raw_cmd)
-
-
-                # Stop planning after the first TRUE navigation click (page change).
-                # Session toggles / checkboxes are NOT navigation — do NOT break on them.
+                truncated.append(raw_cmd)
                 if cmd_type == "dispatchEvent" and raw_cmd.get("event") == "click":
                     nav_indicators = ["btn-next", "btn-pay", "btn-submit", "btn-reset", "btn-back", "-next", "-pay"]
                     payload = raw_cmd.get("payload", "") or ""
                     if any(ind in payload.lower() for ind in nav_indicators):
                         print(f"{CYAN}[Sanitizer] Navigation click detected ({payload!r}), truncating batch to prevent multi-page planning.{RESET}")
                         break
-
-            commands = sanitized
-            # --- End sanitization ---
+            commands = truncated
 
             return {"commands": commands, "status": "planned", "llm_calls_made": llm_calls_made}
         except Exception as e:
@@ -564,6 +553,84 @@ CRITICAL RULES - follow these exactly:
         for cmd in commands:
             if "error" in cmd:
                 print(f"Plan contains error: {cmd['error']}")
+                continue
+
+            # --- Live validation & Sanitization ---
+            live_snapshot = self.bridge.graph.snapshot()
+            live_values = self._get_values_dict()
+            components_info = live_snapshot.get("components", {})
+            
+            allowed_set_targets = []
+            allowed_call_targets = []
+            all_allowed_selectors_set = set()
+            
+            for comp_id, comp in components_info.items():
+                slots = comp.get("stateSlots", {})
+                for slot_key, slot_val in slots.items():
+                    is_collection = isinstance(slot_val, list) or (isinstance(slot_val, dict) and len(slot_val) > 1)
+                    if not is_collection:
+                        allowed_set_targets.append(f"{comp_id}.{slot_key}")
+                
+                elems = comp.get("interactiveElements", [])
+                for el in elems:
+                    sel = el.get("selector", "")
+                    visible = el.get("visible", True)
+                    disabled = el.get("disabled", False)
+                    if sel and visible and not disabled:
+                        all_allowed_selectors_set.add(sel)
+                
+                actions = comp.get("actions", [])
+                for action in (actions or []):
+                    allowed_call_targets.append(f"{comp_id}.{action}")
+                    
+            allowed_set_targets_set = set(allowed_set_targets)
+            allowed_call_targets_set = set(allowed_call_targets)
+            
+            cmd_type = cmd.get("type")
+            rejection_reason = None
+            is_skipped = False
+            
+            if cmd_type == "setState":
+                target = cmd.get("target", "")
+                if target not in allowed_set_targets_set:
+                    rejection_reason = f"Command rejected: target '{target}' is not in the current registry. The component may have unmounted. Check the current registry before retrying."
+                else:
+                    desired_val = cmd.get("value")
+                    current_val = live_values.get(target)
+                    if current_val == desired_val:
+                        is_skipped = True
+            elif cmd_type == "callAction":
+                target = cmd.get("target", "")
+                if "." not in target:
+                    rejection_reason = f"Command rejected: malformed callAction target '{target}' (missing action name)."
+                elif target not in allowed_call_targets_set:
+                    rejection_reason = f"Command rejected: target action '{target}' is not registered. Check the current registry before retrying."
+            elif cmd_type == "dispatchEvent":
+                payload = cmd.get("payload")
+                if isinstance(payload, str) and (payload.startswith("#") or payload.startswith(".")):
+                    if payload not in all_allowed_selectors_set:
+                        rejection_reason = f"Command rejected: selector '{payload}' is not in the current registry. The component may have unmounted or selector is invalid. Check the current registry before retrying."
+            
+            if rejection_reason:
+                print(f"{YELLOW}[Sanitizer] Rejected command: {rejection_reason}{RESET}")
+                action_history.append({
+                    "command": cmd,
+                    "state_changed": False,
+                    "error": rejection_reason,
+                    "rejected": True
+                })
+                consecutive_ineffective += 1
+                step_count += 1
+                continue
+                
+            if is_skipped:
+                target = cmd.get("target", "")
+                print(f"{CYAN}[Sanitizer] Skipping setState on {target!r} — already has value {json.dumps(cmd.get('value'))}.{RESET}")
+                action_history.append({
+                    "command": cmd,
+                    "state_changed": False,
+                    "skipped": True
+                })
                 continue
 
             # 1. Repetition Check
