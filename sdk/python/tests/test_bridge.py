@@ -346,6 +346,46 @@ def test_goal_condition_component_id_matching():
     assert cond.evaluate(snapshot) is True
 
 
+def test_cli_llm_resolution():
+    import os
+    from unittest.mock import patch
+    from react_agent_bridge.cli import resolve_and_check_llm
+
+    # Test config file model fallback and key export
+    mock_config = {
+        "model": "openai/gpt-4o",
+        "api_keys": {
+            "OPENAI_API_KEY": "test-openai-key"
+        }
+    }
+    
+    with patch("react_agent_bridge.cli.load_config", return_value=mock_config):
+        with patch.dict(os.environ, {}, clear=True):
+            model = resolve_and_check_llm(explicit_model=None)
+            assert model == "openai/gpt-4o"
+            assert os.environ.get("OPENAI_API_KEY") == "test-openai-key"
+
+
+def test_cli_argument_resolution_priority():
+    import os
+    from unittest.mock import patch
+    from react_agent_bridge.cli import resolve_and_check_llm
+
+    mock_config = {"model": "ollama/qwen2.5:7b"}
+
+    with patch("react_agent_bridge.cli.load_config", return_value=mock_config):
+        # Env var priority over config file
+        with patch.dict(os.environ, {"REACT_AGENT_BRIDGE_MODEL": "groq/llama3", "GROQ_API_KEY": "groq-key"}):
+            model = resolve_and_check_llm(explicit_model=None)
+            assert model == "groq/llama3"
+
+        # Explicit model flag priority over env var and config
+        with patch.dict(os.environ, {"REACT_AGENT_BRIDGE_MODEL": "groq/llama3", "GROQ_API_KEY": "groq-key", "GEMINI_API_KEY": "gemini-key"}):
+            model = resolve_and_check_llm(explicit_model="gemini/gemini-1.5-flash")
+            assert model == "gemini/gemini-1.5-flash"
+
+
+
 
 
 
