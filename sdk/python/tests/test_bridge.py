@@ -385,6 +385,29 @@ def test_cli_argument_resolution_priority():
             assert model == "gemini/gemini-1.5-flash"
 
 
+@pytest.mark.asyncio
+async def test_safe_subscribe_handles_exceptions():
+    from react_agent_bridge.core.client import ReactAgentBridge
+    from react_agent_bridge.core.exceptions import RuleViolationError
+    from react_agent_bridge.core.models import RegistryDeltaMessage, SerializedComponentEntry
+    from unittest.mock import AsyncMock
+
+    bridge = ReactAgentBridge(host="localhost", port=8000)
+    
+    # Mock self.subscribe to raise a RuleViolationError (as would happen in validation race condition)
+    bridge.subscribe = AsyncMock(side_effect=RuleViolationError("Validation failed"))
+    
+    # Pre-populate graph so component check passes
+    comp = SerializedComponentEntry(id="DashboardView#r9", displayName="DashboardView", mountedAt=1000, route="/")
+    bridge.graph.apply_delta(RegistryDeltaMessage(added=[comp], removed=[], updated=[]))
+    
+    # Call _safe_subscribe and verify it handles the error gracefully without raising
+    await bridge._safe_subscribe("DashboardView#r9")
+    
+    bridge.subscribe.assert_called_once_with("DashboardView#r9")
+
+
+
 
 
 
