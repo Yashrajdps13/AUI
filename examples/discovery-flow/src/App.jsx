@@ -133,16 +133,16 @@ export default function App() {
 
         {/* Steps Tab Indicators */}
         <div className="steps-bar">
-          <button className={`step-tab ${activeStep === 'details' ? 'active' : ''}`} onClick={() => setActiveStep('details')}>
+          <button id="btn-step-tab-details" data-step="details" className={`step-tab ${activeStep === 'details' ? 'active' : ''}`} onClick={() => setActiveStep('details')}>
             1. Details
           </button>
-          <button className={`step-tab ${activeStep === 'options' ? 'active' : ''}`} onClick={() => setActiveStep('options')}>
+          <button id="btn-step-tab-options" data-step="options" className={`step-tab ${activeStep === 'options' ? 'active' : ''}`} onClick={() => setActiveStep('options')}>
             2. Options
           </button>
-          <button className={`step-tab ${activeStep === 'payment' ? 'active' : ''}`} onClick={() => setActiveStep('payment')}>
+          <button id="btn-step-tab-payment" data-step="payment" className={`step-tab ${activeStep === 'payment' ? 'active' : ''}`} onClick={() => setActiveStep('payment')}>
             3. Payment
           </button>
-          <button className={`step-tab ${activeStep === 'success' ? 'active' : ''}`} onClick={() => setActiveStep('success')} disabled={!isSubmitted}>
+          <button id="btn-step-tab-success" data-step="success" className={`step-tab ${activeStep === 'success' ? 'active' : ''}`} onClick={() => setActiveStep('success')} disabled={!isSubmitted}>
             4. Done
           </button>
         </div>
@@ -208,6 +208,8 @@ export default function App() {
                 {['Keynote Panel', 'AI Masterclass', 'Hands-on Labs', 'Networking Dinner'].map((session) => (
                   <div
                     key={session}
+                    id={`btn-session-${session.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}
+                    role="button"
                     className={`checkbox-card ${selectedSessions.includes(session) ? 'selected' : ''}`}
                     onClick={() => toggleSession(session)}
                   >

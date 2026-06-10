@@ -35,6 +35,7 @@ class GoldenTrace:
     execution_time_ms: float
     llm_calls_made: int
     confidence: float = 1.0
+    structural_signature: str = ""
 
 
 class GoldenTraceStore:
@@ -63,6 +64,12 @@ class GoldenTraceStore:
                     confidence REAL NOT NULL
                 )
             """)
+            # Add structural_signature column if it doesn't exist
+            try:
+                cursor.execute("ALTER TABLE golden_traces ADD COLUMN structural_signature TEXT")
+            except sqlite3.OperationalError:
+                pass
+
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS golden_trace_steps (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,8 +103,8 @@ class GoldenTraceStore:
                 INSERT OR REPLACE INTO golden_traces (
                     trace_id, workflow_name, goal_description, recorded_at,
                     application_version_hash, precondition_state_json, postcondition_state_json,
-                    execution_time_ms, llm_calls_made, confidence
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    execution_time_ms, llm_calls_made, confidence, structural_signature
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 trace.trace_id,
                 trace.workflow_name,
@@ -108,7 +115,8 @@ class GoldenTraceStore:
                 json.dumps(trace.postcondition_state),
                 trace.execution_time_ms,
                 trace.llm_calls_made,
-                trace.confidence
+                trace.confidence,
+                trace.structural_signature
             ))
 
             for idx, s in enumerate(trace.steps):
@@ -137,14 +145,50 @@ class GoldenTraceStore:
         finally:
             conn.close()
 
-    def _matches_precondition(self, pre_state: dict, current_state: dict) -> bool:
+    def _matches_precondition(self, pre_state: dict, current_state: dict, trace_steps: List[GoldenTraceStep]) -> bool:
         """
         Validates if current state matches the precondition snapshot within tolerance.
+        Ignores slots that are directly written to during the trace steps.
         """
+        modified_slots_clean = set()
+        for step in trace_steps:
+            if step.command_type in ["setState", "callAction"]:
+                t = step.target
+                if "." in t:
+                    comp, slot = t.rsplit(".", 1)
+                    comp_clean = comp.split("#", 1)[0]
+                    modified_slots_clean.add(f"{comp_clean}.{slot}")
+                else:
+                    comp_clean = t.split("#", 1)[0]
+                    modified_slots_clean.add(comp_clean)
+
+        # Create a cleaned version of current_state
+        cleaned_current = {}
+        for k_curr, val_curr in current_state.items():
+            if "." in k_curr:
+                comp, slot = k_curr.rsplit(".", 1)
+                comp_clean = comp.split("#", 1)[0]
+                cleaned_current[f"{comp_clean}.{slot}"] = val_curr
+            else:
+                comp_clean = k_curr.split("#", 1)[0]
+                cleaned_current[comp_clean] = val_curr
+
         for key, pre_val in pre_state.items():
-            if key not in current_state:
+            if "." in key:
+                comp, slot = key.rsplit(".", 1)
+                comp_clean = comp.split("#", 1)[0]
+                clean_key = f"{comp_clean}.{slot}"
+            else:
+                comp_clean = key.split("#", 1)[0]
+                clean_key = comp_clean
+
+            if clean_key in modified_slots_clean:
+                continue
+
+            if clean_key not in cleaned_current:
                 return False
-            curr_val = current_state[key]
+
+            curr_val = cleaned_current[clean_key]
 
             # Numeric tolerance ±10%
             if isinstance(pre_val, (int, float)) and isinstance(curr_val, (int, float)):
@@ -161,30 +205,34 @@ class GoldenTraceStore:
                     return False
         return True
 
-    def find_applicable_traces(self, workflow_name: str, current_state: dict, min_confidence: float = 0.8) -> List[GoldenTrace]:
+    def find_applicable_traces(self, workflow_name: str, current_state: dict, min_confidence: float = 0.8, structural_signature: Optional[str] = None) -> List[GoldenTrace]:
         conn = sqlite3.connect(self.db_path)
         traces = []
         try:
             cursor = conn.cursor()
-            cursor.execute("""
+            
+            query = """
                 SELECT trace_id, workflow_name, goal_description, recorded_at,
                        application_version_hash, precondition_state_json, postcondition_state_json,
-                       execution_time_ms, llm_calls_made, confidence
+                       execution_time_ms, llm_calls_made, confidence, structural_signature
                 FROM golden_traces
-                WHERE (workflow_name = ? OR goal_description = ?) AND confidence >= ?
-                ORDER BY confidence DESC, recorded_at DESC
-            """, (workflow_name, workflow_name, min_confidence))
+                WHERE (workflow_name = ? OR goal_description = ?
+            """
+            params = [workflow_name, workflow_name]
+            if structural_signature:
+                query += " OR structural_signature = ?"
+                params.append(structural_signature)
+            query += ") AND confidence >= ? ORDER BY confidence DESC, recorded_at DESC"
+            params.append(min_confidence)
+
+            cursor.execute(query, tuple(params))
             rows = cursor.fetchall()
 
             for r in rows:
-                tid, wf, gd, rat, avh, pre_j, post_j, et, llm_c, conf = r
+                tid, wf, gd, rat, avh, pre_j, post_j, et, llm_c, conf, sig = r
                 pre_state = json.loads(pre_j)
-                
-                # Check precondition applicability
-                if not self._matches_precondition(pre_state, current_state):
-                    continue
 
-                # Load steps
+                # Load steps first to extract write-preconditions
                 cursor.execute("""
                     SELECT command_type, target, value_json, event, selector, args_json,
                            pre_state_snapshot_json, post_state_snapshot_json, settle_time_ms
@@ -206,6 +254,10 @@ class GoldenTraceStore:
                         post_state_snapshot=json.loads(sr[7]),
                         settle_time_ms=sr[8]
                     ))
+                
+                # Check precondition applicability
+                if not self._matches_precondition(pre_state, current_state, steps):
+                    continue
 
                 traces.append(GoldenTrace(
                     trace_id=tid,
@@ -218,7 +270,8 @@ class GoldenTraceStore:
                     postcondition_state=json.loads(post_j),
                     execution_time_ms=et,
                     llm_calls_made=llm_c,
-                    confidence=conf
+                    confidence=conf,
+                    structural_signature=sig or ""
                 ))
         except Exception as e:
             logger.error(f"Failed to query applicable traces: {e}", exc_info=True)

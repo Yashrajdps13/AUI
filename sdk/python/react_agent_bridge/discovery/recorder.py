@@ -267,3 +267,21 @@ class HumanSessionRecorder:
                 session_type=self.session_type,
                 element_selector=cmd_id
             ))
+
+        elif msg_type == "interaction":
+            comp_id = data.get("componentId")
+            event = data.get("event")
+            selector = data.get("selector")
+            comp = self.active_components.get(comp_id)
+            comp_display_name = comp.get("displayName") if comp else comp_id
+            
+            await self.corpus.record_event(DiscoveryEvent(
+                event_type=DiscoveryEventType.INTERACTION_OCCURRED,
+                timestamp=now,
+                session_id=self.session_id,
+                session_type=self.session_type,
+                component_id=comp_id,
+                component_display_name=comp_display_name,
+                element_selector=selector,
+                route=self.current_route
+            ))

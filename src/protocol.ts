@@ -87,4 +87,5 @@ export type BridgeMessage =
   | { type: 'renderSettled'; target: string }
   | { type: 'appLog'; entry: AppLogEntry }
   | { type: 'ledgerSnapshot'; commandId: string; ledger: AppLogEntry[] }
-  | { type: 'auditLogSnapshot'; commandId: string; auditLog: CommandAuditEntry[] };
+  | { type: 'auditLogSnapshot'; commandId: string; auditLog: CommandAuditEntry[] }
+  | { type: 'interaction'; componentId: string; event: 'click' | 'change' | 'focus'; selector: string; value?: unknown };

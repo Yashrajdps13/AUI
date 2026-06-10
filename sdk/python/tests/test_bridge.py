@@ -326,6 +326,27 @@ def test_agent_runner_init_and_compilation():
     assert runner.graph is not None
 
 
+def test_goal_condition_component_id_matching():
+    graph = ApplicationStateGraph()
+    slot = SerializedStateSlot(key="isSubmitted", hookIndex=0)
+    comp = SerializedComponentEntry(
+        id="App#r9",
+        displayName="App",
+        mountedAt=1000,
+        route="/",
+        stateSlots=[slot]
+    )
+    graph.apply_delta(RegistryDeltaMessage(added=[comp], removed=[], updated=[]))
+    graph.update_state_value("App#r9.isSubmitted", True)
+
+    cond = GoalCondition(target="App.isSubmitted", operator="equals", value=True)
+    assert cond.evaluate(graph) is True
+
+    snapshot = graph.snapshot()
+    assert cond.evaluate(snapshot) is True
+
+
+
 
 
 

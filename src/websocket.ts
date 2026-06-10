@@ -44,6 +44,9 @@ class AgentWebSocketManagerImpl {
   // Keep track of agent-initiated mutations to filter out in the local UI logger
   private agentInFlightMutations: Map<string, any> = new Map();
 
+  // Pre-capture: stores the selector found at mousedown time, before React re-renders
+  private pendingInteraction: { componentId: string; selector: string } | null = null;
+
   public consumeAgentMutation(target: string, value: any): boolean {
     if (this.agentInFlightMutations.has(target)) {
       const expectedValue = this.agentInFlightMutations.get(target);
@@ -57,6 +60,105 @@ class AgentWebSocketManagerImpl {
     }
     return false;
   }
+
+  // Mousedown handler: captures the interaction synchronously BEFORE React fires its onClick
+  // and potentially unmounts/re-renders elements (e.g. navigation buttons that change the page).
+  private handleMouseDown = (event: MouseEvent): void => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+
+    const registry = BridgeStore.getSnapshot();
+    for (const [componentId, entry] of registry.entries()) {
+      const dom = entry.domRef;
+      if (!dom || !dom.contains(target)) continue;
+
+      const interactive = this.getInteractiveElements(dom);
+      for (const el of interactive) {
+        if (el.selector) {
+          try {
+            const matched = dom.querySelector(el.selector);
+            if (matched === target || matched?.contains(target)) {
+              // Store the pre-captured interaction for use by the click handler
+              this.pendingInteraction = { componentId, selector: el.selector };
+              return;
+            }
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+    // If no matching interactive element found, clear any stale pending interaction
+    this.pendingInteraction = null;
+  };
+
+  private handleWindowClick = (event: MouseEvent): void => {
+    this.flushAllSnapshots();
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+
+    // First, try to use the pre-captured selector from mousedown (handles navigation buttons
+    // that unmount themselves synchronously during React's click handler)
+    if (this.pendingInteraction) {
+      const { componentId, selector } = this.pendingInteraction;
+      this.pendingInteraction = null;
+
+      if (event.isTrusted) {
+        CommandAuditLogger.addEntry({
+          type: 'dispatchEvent',
+          target: `${componentId}.click`,
+          value: selector,
+          success: true,
+          timestamp: Date.now(),
+        });
+      }
+
+      this.send({
+        type: 'interaction' as any,
+        componentId,
+        event: 'click',
+        selector,
+      });
+      return;
+    }
+
+    // Fallback: live DOM scan (for cases where mousedown didn't capture or was cleared)
+    const registry = BridgeStore.getSnapshot();
+    for (const [componentId, entry] of registry.entries()) {
+      const dom = entry.domRef;
+      if (!dom || !dom.contains(target)) continue;
+
+      const interactive = this.getInteractiveElements(dom);
+      for (const el of interactive) {
+        if (el.selector) {
+          try {
+            const matched = dom.querySelector(el.selector);
+            if (matched === target || matched?.contains(target)) {
+              if (event.isTrusted) {
+                CommandAuditLogger.addEntry({
+                  type: 'dispatchEvent',
+                  target: `${componentId}.click`,
+                  value: el.selector,
+                  success: true,
+                  timestamp: Date.now(),
+                });
+              }
+
+              this.send({
+                type: 'interaction' as any,
+                componentId,
+                event: 'click',
+                selector: el.selector,
+              });
+              return;
+            }
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+  };
 
   // Debounce timers and pending actions for state snapshots and audit logs
   private debounceTimers: Map<string, any> = new Map();
@@ -77,13 +179,18 @@ class AgentWebSocketManagerImpl {
     this.lastSentValues.set(target, valStr);
 
     if (!isAgent && !isInitialSync) {
-      CommandAuditLogger.addEntry({
-        type: 'setState',
-        target,
-        value,
-        success: true,
-        timestamp: Date.now(),
-      });
+      const lastDot = target.lastIndexOf('.');
+      const slotKey = lastDot !== -1 ? target.substring(lastDot + 1) : '';
+      const isNavSlot = ['activeStep', 'route', 'step', 'activeTab'].includes(slotKey);
+      if (!isNavSlot) {
+        CommandAuditLogger.addEntry({
+          type: 'setState',
+          target,
+          value,
+          success: true,
+          timestamp: Date.now(),
+        });
+      }
     }
   }
 
@@ -177,8 +284,9 @@ class AgentWebSocketManagerImpl {
 
     if (typeof window !== 'undefined') {
       window.removeEventListener('click', this.flushAllSnapshots);
+      window.removeEventListener('mousedown', this.handleMouseDown, true);
+      window.removeEventListener('click', this.handleWindowClick, true);
     }
-
     for (const timer of this.debounceTimers.values()) {
       clearTimeout(timer);
     }
@@ -230,6 +338,8 @@ class AgentWebSocketManagerImpl {
 
     if (typeof window !== 'undefined') {
       window.addEventListener('click', this.flushAllSnapshots);
+      window.addEventListener('mousedown', this.handleMouseDown, true);
+      window.addEventListener('click', this.handleWindowClick, true);
     }
 
     // Sync the registry updates
@@ -249,9 +359,10 @@ class AgentWebSocketManagerImpl {
 
     if (typeof window !== 'undefined') {
       window.removeEventListener('click', this.flushAllSnapshots);
+      window.removeEventListener('mousedown', this.handleMouseDown, true);
+      window.removeEventListener('click', this.handleWindowClick, true);
     }
 
-    // Detach the agent logger listener
     AgentLogger.setListener(null);
 
     if (this.unsubscribeStore) {
@@ -1007,28 +1118,52 @@ class AgentWebSocketManagerImpl {
             let targetDom = dom;
             if (command.payload && typeof command.payload === 'string') {
               const selected = dom.querySelector(command.payload);
-              if (selected instanceof HTMLElement) targetDom = selected;
+              if (selected instanceof HTMLElement) {
+                targetDom = selected;
+              } else {
+                throw new Error(`Element matching selector "${command.payload}" not found in component.`);
+              }
             }
             targetDom.click();
           } else if (command.event === 'focus') {
             let targetDom = dom;
             if (command.payload && typeof command.payload === 'string') {
               const selected = dom.querySelector(command.payload);
-              if (selected instanceof HTMLElement) targetDom = selected;
+              if (selected instanceof HTMLElement) {
+                targetDom = selected;
+              } else {
+                throw new Error(`Element matching selector "${command.payload}" not found in component.`);
+              }
             }
             targetDom.focus();
           } else if (command.event === 'change') {
             let targetDom = dom;
             let valueToSet = command.payload;
 
-            if (command.payload && typeof command.payload === 'object') {
+            if (command.payload && typeof command.payload === 'object' && command.payload !== null) {
               const payloadObj = command.payload as any;
               if (typeof payloadObj.selector === 'string') {
                 const selected = dom.querySelector(payloadObj.selector);
-                if (selected instanceof HTMLElement) targetDom = selected;
+                if (selected instanceof HTMLElement) {
+                  targetDom = selected;
+                } else {
+                  throw new Error(`Element matching selector "${payloadObj.selector}" not found in component.`);
+                }
               }
               if ('value' in payloadObj) {
                 valueToSet = payloadObj.value;
+              }
+            } else if (typeof command.payload === 'string') {
+              // If the payload is a selector string itself (starts with # or .)
+              const isSelector = command.payload.startsWith('#') || command.payload.startsWith('.');
+              if (isSelector) {
+                const selected = dom.querySelector(command.payload);
+                if (selected instanceof HTMLElement) {
+                  targetDom = selected;
+                  valueToSet = ''; // treat selector-only change as trigger
+                } else {
+                  throw new Error(`Element matching selector "${command.payload}" not found in component.`);
+                }
               }
             }
 

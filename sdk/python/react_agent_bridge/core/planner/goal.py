@@ -23,9 +23,10 @@ class GoalCondition:
         if hasattr(current_state, "get_slot_value"):
             comp = current_state.get_component(comp_id)
             if not comp:
-                comp_id_clean = comp_id.replace(":", "")
+                comp_id_clean = comp_id.split("#", 1)[0].split(":", 1)[0]
                 for cid, node in current_state.components.items():
-                    if cid.replace(":", "") == comp_id_clean:
+                    cid_clean = cid.split("#", 1)[0].split(":", 1)[0]
+                    if cid_clean == comp_id_clean:
                         comp = node
                         break
             if not comp or slot_key not in comp.state_slots:
@@ -35,9 +36,10 @@ class GoalCondition:
             components = current_state.get("components", {})
             comp_data = components.get(comp_id)
             if not comp_data:
-                comp_id_clean = comp_id.replace(":", "")
+                comp_id_clean = comp_id.split("#", 1)[0].split(":", 1)[0]
                 for cid, cdata in components.items():
-                    if cid.replace(":", "") == comp_id_clean:
+                    cid_clean = cid.split("#", 1)[0].split(":", 1)[0]
+                    if cid_clean == comp_id_clean:
                         comp_data = cdata
                         break
             comp_data = comp_data or {}
