@@ -19,7 +19,46 @@ class WorkflowInferenceEngine:
         self._workflows: Dict[str, Dict[str, Any]] = {}
         self.last_run_timestamp: float = 0.0
 
-    async def analyze(self, min_confidence: float = 0.6) -> List[Dict[str, Any]]:
+    async def _describe_step(self, route: str, slots: List[str], llm_adapter: Any) -> str:
+        prompt = f"""
+You are analyzing usage data for a React web application to describe a step in a user workflow.
+Based on the route and the state slots changed during this step, write a concise description in plain English of what action/goal the user was accomplishing (e.g. "Enter personal details and transition to next step").
+
+Route: {route}
+State Slots Changed: {', '.join(slots) if slots else 'None (Success page / View confirmation)'}
+
+Output ONLY the plain English description. Do not include quotes, markdown formatting, or any extra text.
+"""
+        model = getattr(llm_adapter, "model", "ollama/qwen2.5:7b")
+        try:
+            import litellm
+            from litellm import acompletion
+            
+            response = await acompletion(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "You are a concise technical writer. Output strictly the requested description and nothing else."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.0
+            )
+            desc = response.choices[0].message.content.strip()
+            if desc.startswith('"') and desc.endswith('"'):
+                desc = desc[1:-1].strip()
+            return desc
+        except Exception as e:
+            logger.error(f"Failed to call LLM for step description: {e}")
+            if "details" in route:
+                return "Fill out registration details"
+            elif "options" in route:
+                return "Select optional sessions"
+            elif "payment" in route:
+                return "Enter payment card details"
+            elif "success" in route:
+                return "Submit the registration and view confirmation"
+            return f"Accomplish tasks on route {route}"
+
+    async def analyze(self, min_confidence: float = 0.6, llm_adapter: Any = None) -> List[Dict[str, Any]]:
         """
         Runs incremental workflow inference and updates the internal workflows cache.
         Returns the list of active workflows sorted by confidence descending.
@@ -56,12 +95,13 @@ class WorkflowInferenceEngine:
                 v = session_versions.get(sid, "initial_v1")
                 return 1.0 if v == latest_version else 0.2
 
-            # 2. Get terminal candidates
+            # 2. Get terminal candidates - exclude navigation slot keys like activeStep
             cursor.execute("""
                 SELECT component_display_name, slot_key, new_value_json, COUNT(DISTINCT session_id) as freq
                 FROM events
                 WHERE event_type = 'SLOT_CHANGED'
                   AND (new_value_json = 'true' OR lower(new_value_json) IN ('"success"', '"complete"', '"completed"', '"passed"', '"succeeded"'))
+                  AND slot_key NOT IN ('activeStep', 'route', 'step', 'activeTab')
                 GROUP BY component_display_name, slot_key, new_value_json
                 HAVING freq >= 1
             """)
@@ -95,7 +135,7 @@ class WorkflowInferenceEngine:
                 # Query all slot changes in the success sessions (to build/update sequence)
                 placeholders = ",".join("?" for _ in success_session_ids)
                 cursor.execute(f"""
-                    SELECT session_id, component_display_name, slot_key, new_value_json, timestamp, route
+                    SELECT session_id, component_display_name, slot_key, new_value_json, timestamp, route, previous_value_json
                     FROM events
                     WHERE session_id IN ({placeholders})
                       AND event_type = 'SLOT_CHANGED'
@@ -104,94 +144,181 @@ class WorkflowInferenceEngine:
                 events = cursor.fetchall()
 
                 # Group events by session
-                session_events: Dict[str, List[tuple]] = {}
+                session_events = {}
                 for r in events:
                     sid = r[0]
                     if sid not in session_events:
                         session_events[sid] = []
-                    session_events[sid].append((r[1], r[2], r[3], r[4], r[5]))
+                    session_events[sid].append((r[1], r[2], r[3], r[4], r[5], r[6]))
 
-                # Count frequency and calculate average order of each non-terminal change
-                slot_counts: Dict[str, float] = {}
-                slot_positions: Dict[str, List[int]] = {}
-                slot_values: Dict[str, Dict[str, int]] = {}
-                slot_routes: Dict[str, set] = {}
-
+                # Filter and truncate events for each session
+                session_filtered_events = {}
+                from react_agent_bridge.discovery.recorder import is_probably_sensitive
                 for sid, evs in session_events.items():
-                    # Filter out noise (slots that changed > 20 times in a single session)
-                    counts_in_session: Dict[str, int] = {}
-                    for comp, slot, val_j, ts, rt in evs:
-                        t_key = f"{comp}.{slot}"
-                        counts_in_session[t_key] = counts_in_session.get(t_key, 0) + 1
+                    # Find terminal index
+                    terminal_idx = -1
+                    for i, ev in enumerate(evs):
+                        t_key = f"{ev[0]}.{ev[1]}"
+                        if t_key == terminal_target:
+                            try:
+                                val = json.loads(ev[2]) if ev[2] else None
+                            except Exception:
+                                val = ev[2]
+                            if val == terminal_val:
+                                terminal_idx = i
+                                break
 
-                    filtered_evs = [
-                        (comp, slot, val_j, ts, rt)
-                        for comp, slot, val_j, ts, rt in evs
-                        if counts_in_session[f"{comp}.{slot}"] <= 20 and f"{comp}.{slot}" != terminal_target
-                    ]
+                    if terminal_idx != -1:
+                        end_idx = terminal_idx
+                        # Include subsequent events within 1.0 second (to capture final activeStep changes)
+                        if terminal_idx + 1 < len(evs):
+                            t_term = evs[terminal_idx][3]
+                            t_next = evs[terminal_idx + 1][3]
+                            if t_next - t_term <= 1.0:
+                                end_idx = terminal_idx + 1
+                        truncated_evs = evs[:end_idx + 1]
+                    else:
+                        truncated_evs = evs
 
-                    # Map unique slot change order in this session
-                    seen_slots = set()
-                    for pos, (comp, slot, val_j, ts, rt) in enumerate(filtered_evs):
-                        t_key = f"{comp}.{slot}"
-                        if t_key not in seen_slots:
-                            seen_slots.add(t_key)
-                            slot_counts[t_key] = slot_counts.get(t_key, 0.0) + get_weight(sid)
-                            if t_key not in slot_positions:
-                                slot_positions[t_key] = []
-                            slot_positions[t_key].append(pos)
+                    # Filter snapshots/no-ops
+                    filtered_evs = []
+                    for comp, slot, val_j, ts, rt, prev_j in truncated_evs:
+                        if prev_j is None:
+                            continue
+                        if prev_j == val_j and not is_probably_sensitive(slot):
+                            continue
+                        filtered_evs.append((comp, slot, val_j, ts, rt))
+                    session_filtered_events[sid] = filtered_evs
 
-                            if t_key not in slot_values:
-                                slot_values[t_key] = {}
-                            slot_values[t_key][val_j] = slot_values[t_key].get(val_j, 0) + 1
+                # Query all ROUTE_CHANGED events to determine sequence of routes visited
+                cursor.execute(f"""
+                    SELECT DISTINCT route, timestamp
+                    FROM events
+                    WHERE session_id IN ({placeholders})
+                      AND event_type = 'ROUTE_CHANGED'
+                      AND route IS NOT NULL
+                    ORDER BY session_id, timestamp ASC
+                """, success_session_ids)
+                routes_visited = []
+                for r in cursor.fetchall():
+                    rt = r[0]
+                    if rt and rt not in routes_visited:
+                        routes_visited.append(rt)
 
-                            if t_key not in slot_routes:
-                                slot_routes[t_key] = set()
-                            if rt:
-                                slot_routes[t_key].add(rt)
+                # GROUP BY ROUTE OR FALLBACK
+                if len(routes_visited) <= 1:
+                    # Fallback to slot-by-slot sequence
+                    slot_counts = {}
+                    slot_positions = {}
+                    slot_values = {}
+                    slot_routes = {}
 
-                # Steps are slots changed in >= 50% of success sessions
-                num_success_sessions = sum(get_weight(sid) for sid in success_session_ids)
-                step_candidates = []
-                for t_key, count in slot_counts.items():
-                    ratio = count / num_success_sessions if num_success_sessions > 0 else 0.0
-                    if ratio >= 0.5:
-                        avg_pos = sum(slot_positions[t_key]) / len(slot_positions[t_key])
-                        # Find most common value json
-                        most_common_val_json = max(slot_values[t_key].items(), key=lambda x: x[1])[0]
-                        try:
-                            mcv = json.loads(most_common_val_json) if most_common_val_json else None
-                        except Exception:
-                            mcv = most_common_val_json
-                        
-                        step_candidates.append({
-                            "target": t_key,
-                            "avg_pos": avg_pos,
-                            "value": mcv,
-                            "routes": list(slot_routes[t_key])
+                    for sid, evs in session_filtered_events.items():
+                        # Track positions in filtered list
+                        counts_in_session = {}
+                        for comp, slot, val_j, ts, rt in evs:
+                            t_key = f"{comp}.{slot}"
+                            counts_in_session[t_key] = counts_in_session.get(t_key, 0) + 1
+
+                        filtered_evs = [
+                            (comp, slot, val_j, ts, rt)
+                            for comp, slot, val_j, ts, rt in evs
+                            if counts_in_session[f"{comp}.{slot}"] <= 20 and f"{comp}.{slot}" != terminal_target
+                        ]
+
+                        seen_slots = set()
+                        for pos, (comp, slot, val_j, ts, rt) in enumerate(filtered_evs):
+                            t_key = f"{comp}.{slot}"
+                            if t_key not in seen_slots:
+                                seen_slots.add(t_key)
+                                slot_counts[t_key] = slot_counts.get(t_key, 0.0) + get_weight(sid)
+                                if t_key not in slot_positions:
+                                    slot_positions[t_key] = []
+                                slot_positions[t_key].append(pos)
+
+                                if t_key not in slot_values:
+                                    slot_values[t_key] = {}
+                                slot_values[t_key][val_j] = slot_values[t_key].get(val_j, 0) + 1
+
+                                if t_key not in slot_routes:
+                                    slot_routes[t_key] = set()
+                                if rt:
+                                    slot_routes[t_key].add(rt)
+
+                    num_success_sessions = sum(get_weight(sid) for sid in success_session_ids)
+                    step_candidates = []
+                    for t_key, count in slot_counts.items():
+                        ratio = count / num_success_sessions if num_success_sessions > 0 else 0.0
+                        if ratio >= 0.5:
+                            avg_pos = sum(slot_positions[t_key]) / len(slot_positions[t_key])
+                            most_common_val_json = max(slot_values[t_key].items(), key=lambda x: x[1])[0]
+                            try:
+                                mcv = json.loads(most_common_val_json) if most_common_val_json else None
+                            except Exception:
+                                mcv = most_common_val_json
+                            
+                            step_candidates.append({
+                                "target": t_key,
+                                "avg_pos": avg_pos,
+                                "value": mcv,
+                                "routes": list(slot_routes[t_key])
+                            })
+
+                    step_candidates.sort(key=lambda x: x["avg_pos"])
+
+                    steps = []
+                    for s in step_candidates:
+                        comp_name, s_key = s["target"].rsplit(".", 1)
+                        op = "equals" if s["value"] is not None else "truthy"
+                        steps.append({
+                            "target": s["target"],
+                            "operator": op,
+                            "value": s["value"],
+                            "description": f"Set {s_key} on {comp_name}"
                         })
+                    workflow_slots = {s["target"] for s in steps}
+                else:
+                    # Route-based grouping
+                    # Collect changed slots per route across success sessions
+                    route_slots = {r: set() for r in routes_visited}
+                    for sid, evs in session_filtered_events.items():
+                        for comp, slot, val_j, ts, rt in evs:
+                            if rt in route_slots:
+                                # Exclude navigation slot keys
+                                if slot not in ('activeStep', 'route', 'step', 'activeTab'):
+                                    route_slots[rt].add(f"{comp}.{slot}")
 
-                # Sort steps by average order of appearance
-                step_candidates.sort(key=lambda x: x["avg_pos"])
+                    # Build step definitions corresponding to route stages
+                    steps = []
+                    for rt in routes_visited:
+                        slots = sorted(list(route_slots[rt]))
+                        # Determine target
+                        if slots:
+                            # Find a representative slot (preferring user input slots)
+                            user_slots = [s for s in slots if "totalCost" not in s]
+                            target_slot = user_slots[0] if user_slots else slots[0]
+                            operator = "non_empty"
+                            value = None
+                        else:
+                            # Final success route step
+                            target_slot = terminal_target
+                            operator = "equals"
+                            value = terminal_val
 
-                steps = []
-                for s in step_candidates:
-                    comp_name, s_key = s["target"].rsplit(".", 1)
-                    op = "equals" if s["value"] is not None else "truthy"
-                    steps.append({
-                        "target": s["target"],
-                        "operator": op,
-                        "value": s["value"],
-                        "description": f"Set {s_key} on {comp_name}"
-                    })
+                        # Call LLM for plain English description
+                        desc = await self._describe_step(rt, slots, llm_adapter)
 
-                # If no workflow steps are identified, skip this candidate
-                if not steps:
-                    continue
-
-                # 3. Identify failure conditions in stalled/failed sessions
-                # Failed sessions: completed sessions that did not reach success, but changed >= 50% of workflow step slots
-                workflow_slots = {s["target"] for s in steps}
+                        steps.append({
+                            "target": target_slot,
+                            "operator": operator,
+                            "value": value,
+                            "description": desc
+                        })
+                    
+                    workflow_slots = set()
+                    for rt, slots in route_slots.items():
+                        workflow_slots.update(slots)
+                
                 cursor.execute("SELECT session_id FROM sessions WHERE is_complete = 1")
                 all_completed_ids = [r[0] for r in cursor.fetchall()]
                 failed_session_ids = [sid for sid in all_completed_ids if sid not in success_session_ids]
@@ -209,7 +336,7 @@ class WorkflowInferenceEngine:
                         changed_slots = {r[0] for r in cursor.fetchall()}
                         intersection = changed_slots.intersection(workflow_slots)
                         if len(intersection) >= len(workflow_slots) / 2:
-                            qualifying_failed_ids.add(fsid) if hasattr(qualifying_failed_ids, 'add') else qualifying_failed_ids.append(fsid)
+                            qualifying_failed_ids.append(fsid)
 
                     if qualifying_failed_ids:
                         # Scan qualifying failed sessions for any slot containing error, failed, invalid, or err
@@ -239,6 +366,7 @@ class WorkflowInferenceEngine:
                                 best_fail_val = best_fail_val_json
 
                             if best_fail_val:
+                                from react_agent_bridge.core.planner.goal import GoalCondition
                                 failure_cond = GoalCondition(
                                     target=best_fail_target,
                                     operator="equals" if best_fail_val is not True else "truthy",
@@ -271,6 +399,7 @@ class WorkflowInferenceEngine:
                 # Generate a clean, descriptive name
                 wf_name = f"{comp_name} {slot_key} Workflow".replace("Store", "").replace("Panel", "").strip()
 
+                from react_agent_bridge.core.planner.goal import GoalCondition
                 success_cond = GoalCondition(target=terminal_target, operator="equals", value=terminal_val)
 
                 # Merge/update internal state

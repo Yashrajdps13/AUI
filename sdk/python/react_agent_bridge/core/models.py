@@ -91,6 +91,14 @@ class AuditLogSnapshotMessage(BaseModel):
     auditLog: List[CommandAuditEntry] = Field(default_factory=list)
 
 
+class InteractionMessage(BaseModel):
+    type: Literal["interaction"] = "interaction"
+    componentId: str
+    event: Literal["click", "change", "focus"]
+    selector: str
+    value: Optional[Any] = None
+
+
 BridgeMessage = Union[
     RegistryDeltaMessage,
     StateSnapshotMessage,
@@ -99,6 +107,7 @@ BridgeMessage = Union[
     AppLogMessage,
     LedgerSnapshotMessage,
     AuditLogSnapshotMessage,
+    InteractionMessage,
 ]
 
 
@@ -119,5 +128,7 @@ def parse_bridge_message(data: dict) -> BridgeMessage:
         return LedgerSnapshotMessage.model_validate(data)
     elif msg_type == "auditLogSnapshot":
         return AuditLogSnapshotMessage.model_validate(data)
+    elif msg_type == "interaction":
+        return InteractionMessage.model_validate(data)
     else:
         raise ValueError(f"Unknown message type: {msg_type}")

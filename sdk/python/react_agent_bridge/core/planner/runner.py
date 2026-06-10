@@ -101,63 +101,169 @@ class AgentRunner:
         idx = state.get("trace_step_index", 0)
         llm_calls_made = state.get("llm_calls_made", 0)
 
+        # Helper to compute structural signature of goal
+        def compute_goal_signature(goal: Goal) -> str:
+            sig_parts = []
+            for cond in goal.success_conditions:
+                parts = cond.target.rsplit(".", 1)
+                if len(parts) == 2:
+                    comp_id, slot_key = parts
+                    clean_comp = comp_id.split("#", 1)[0]
+                    sig_parts.append(f"{clean_comp}.{slot_key}:{cond.operator}")
+            sig_parts.sort()
+            return ",".join(sig_parts)
+
+        # Helper to parameterize golden trace commands based on current goal
+        def get_parameterized_cmd(step: Any, trace: Any, current_goal: Goal) -> Optional[dict]:
+            # Create a mapping from clean component name to active component ID
+            # Use the LIVE graph (not stale initial snapshot) so navigation between pages works
+            clean_to_active_id = {}
+            for active_id in self.bridge.graph.components.keys():
+                clean_name = active_id.split("#", 1)[0]
+                clean_to_active_id[clean_name] = active_id
+
+            # Helper to map a recorded target to the active target
+            def map_target(recorded_target: str) -> str:
+                if not recorded_target:
+                    return recorded_target
+                if "." in recorded_target:
+                    comp_part, slot_part = recorded_target.rsplit(".", 1)
+                    comp_clean = comp_part.split("#", 1)[0]
+                    active_comp = clean_to_active_id.get(comp_clean, comp_part)
+                    return f"{active_comp}.{slot_part}"
+                else:
+                    comp_clean = recorded_target.split("#", 1)[0]
+                    return clean_to_active_id.get(comp_clean, recorded_target)
+
+            active_target = map_target(step.target)
+            cmd = {"type": step.command_type, "target": active_target}
+            if step.event is not None:
+                cmd["event"] = step.event
+            if step.args is not None:
+                cmd["args"] = step.args
+                
+            val_map = {}
+            for cond in current_goal.success_conditions:
+                if cond.operator not in ["equals", "includes"]:
+                    continue
+                parts = cond.target.rsplit(".", 1)
+                if len(parts) != 2:
+                    continue
+                curr_comp, curr_slot = parts
+                curr_comp_clean = curr_comp.split("#", 1)[0]
+                
+                for trace_target, trace_val in trace.postcondition_state.items():
+                    t_parts = trace_target.rsplit(".", 1)
+                    if len(t_parts) == 2:
+                        t_comp, t_slot = t_parts
+                        t_comp_clean = t_comp.split("#", 1)[0]
+                        if t_comp_clean == curr_comp_clean and t_slot == curr_slot:
+                            val_map[trace_target] = (trace_val, cond.value)
+                            break
+
+            if step.command_type == "setState":
+                val = step.value
+                target_comp, target_slot = step.target.rsplit(".", 1) if "." in step.target else (step.target, "")
+                target_comp_clean = target_comp.split("#", 1)[0]
+                
+                for orig_target, (orig_val, curr_val) in val_map.items():
+                    orig_comp, orig_slot = orig_target.rsplit(".", 1)
+                    orig_comp_clean = orig_comp.split("#", 1)[0]
+                    if orig_comp_clean == target_comp_clean and orig_slot == target_slot:
+                        val = curr_val
+                        break
+                cmd["value"] = val
+                
+            elif step.command_type == "dispatchEvent" and step.selector:
+                selector = step.selector
+                
+                for orig_target, (orig_val, curr_val) in val_map.items():
+                    if isinstance(orig_val, list) and isinstance(curr_val, list):
+                        matched_item_idx = -1
+                        for i, item in enumerate(orig_val):
+                            slug = re.sub(r'[^a-z0-9]+', '-', str(item).lower()).strip('-')
+                            if slug and slug in selector:
+                                matched_item_idx = i
+                                break
+                        
+                        if matched_item_idx != -1:
+                            if matched_item_idx < len(curr_val):
+                                new_item = curr_val[matched_item_idx]
+                                slug_orig = re.sub(r'[^a-z0-9]+', '-', str(orig_val[matched_item_idx]).lower()).strip('-')
+                                slug_curr = re.sub(r'[^a-z0-9]+', '-', str(new_item).lower()).strip('-')
+                                selector = selector.replace(slug_orig, slug_curr)
+                                selector = selector.replace(str(orig_val[matched_item_idx]), str(new_item))
+                            else:
+                                return None
+                    else:
+                        slug_orig = re.sub(r'[^a-z0-9]+', '-', str(orig_val).lower()).strip('-')
+                        slug_curr = re.sub(r'[^a-z0-9]+', '-', str(curr_val).lower()).strip('-')
+                        if slug_orig and slug_orig in selector:
+                            selector = selector.replace(slug_orig, slug_curr)
+                        if str(orig_val) in selector:
+                            selector = selector.replace(str(orig_val), str(curr_val))
+                            
+                cmd["payload"] = selector
+            else:
+                if step.value is not None:
+                    cmd["value"] = step.value
+                if step.selector is not None:
+                    cmd["payload"] = step.selector
+                    
+            return cmd
+
         # 1. Check if we have an active trace we are replaying
         if active_trace:
             steps = active_trace.steps
-            if idx < len(steps):
+            while idx < len(steps):
                 step = steps[idx]
-                cmd = {"type": step.command_type, "target": step.target}
-                if step.value is not None:
-                    cmd["value"] = step.value
-                if step.event is not None:
-                    cmd["event"] = step.event
-                if step.selector is not None:
-                    cmd["payload"] = step.selector
-                if step.args is not None:
-                    cmd["args"] = step.args
-                
+                cmd = get_parameterized_cmd(step, active_trace, state["goal"])
+                if cmd is None:
+                    # Skip step because the new collection list has fewer items
+                    idx += 1
+                    state["trace_step_index"] = idx
+                    continue
+
                 print(f"{CYAN}[Trace Replay] Replaying step {idx+1}/{len(steps)}: {json.dumps(cmd)}{RESET}")
                 return {
                     "commands": [cmd],
                     "status": "planned",
                     "trace_step_index": idx
                 }
-            else:
-                print(f"{YELLOW}[Trace Replay] Completed trace, but goal conditions not met. Falling back to LLM.{RESET}")
-                state["active_trace"] = None
-                active_trace = None
+
+            # Reached past end of steps
+            print(f"{YELLOW}[Trace Replay] Completed trace, but goal conditions not met. Falling back to LLM.{RESET}")
+            state["active_trace"] = None
+            active_trace = None
 
         # 2. If no active trace, query the store for applicable traces
         if not active_trace:
             try:
                 from react_agent_bridge.discovery.traces import GoldenTraceStore
                 store = GoldenTraceStore(self.db_path)
-                traces = store.find_applicable_traces(state["goal"].description, state["values"], min_confidence=0.8)
+                sig = compute_goal_signature(state["goal"])
+                traces = store.find_applicable_traces(state["goal"].description, state["values"], min_confidence=0.8, structural_signature=sig)
                 if traces:
                     trace = traces[0]
                     state["active_trace"] = trace
                     state["trace_step_index"] = 0
                     print(f"{CYAN}[Trace Replay] Found applicable golden trace (ID: {trace.trace_id}) with confidence {trace.confidence:.2f}. Replaying...{RESET}")
                     
-                    step = trace.steps[0]
-                    cmd = {"type": step.command_type, "target": step.target}
-                    if step.value is not None:
-                        cmd["value"] = step.value
-                    if step.event is not None:
-                        cmd["event"] = step.event
-                    if step.selector is not None:
-                        cmd["payload"] = step.selector
-                    if step.args is not None:
-                        cmd["args"] = step.args
+                    while state["trace_step_index"] < len(trace.steps):
+                        step = trace.steps[state["trace_step_index"]]
+                        cmd = get_parameterized_cmd(step, trace, state["goal"])
+                        if cmd is None:
+                            state["trace_step_index"] += 1
+                            continue
                         
-                    return {
-                        "commands": [cmd],
-                        "status": "planned",
-                        "active_trace": trace,
-                        "trace_step_index": 0
-                    }
+                        return {
+                            "commands": [cmd],
+                            "status": "planned",
+                            "active_trace": trace,
+                            "trace_step_index": state["trace_step_index"]
+                        }
             except Exception as e:
-                logger.error(f"Failed to query trace store: {e}")
+                logger.error(f"Failed to query trace store: {e}", exc_info=True)
 
         # Increment LLM calls
         llm_calls_made += 1
@@ -177,8 +283,78 @@ class AgentRunner:
                 logger.error(f"Custom planner_fn failed: {e}")
 
         # Default LiteLLM planning logic
-        registry_str = json.dumps(state["registry"], indent=2)
-        values_str = json.dumps(state["values"], indent=2)
+        # IMPORTANT: Always refresh registry and values from the LIVE graph so we see the
+        # current page's components/elements (not the stale initial snapshot).
+        live_snapshot = self.bridge.graph.snapshot()
+        live_values = self._get_values_dict()
+
+        # Build a concise, flat representation of the current registry for the LLM.
+        # This prevents small models from getting confused by deeply-nested JSON.
+        components_info = live_snapshot.get("components", {})
+        registry_lines = []
+        allowed_set_targets = []  # "ComponentID.slotKey" strings for setState
+        allowed_call_targets = []  # "ComponentID.actionName" strings for callAction
+        allowed_selectors_by_comp = {}  # ComponentID -> [selector, ...]
+
+        for comp_id, comp in components_info.items():
+            registry_lines.append(f"Component: {comp_id} (displayName={comp.get('displayName','?')}, route={comp.get('route','?')})")
+            slots = comp.get("stateSlots", {})
+            descs = comp.get("stateSlotDescriptions", {})
+            for slot_key, slot_val in slots.items():
+                desc = descs.get(slot_key, "")
+                registry_lines.append(f"  stateSlot: {slot_key} = {json.dumps(slot_val)}" + (f"  # {desc}" if desc else ""))
+                # Prohibit direct setState on collections (lists or dicts with multiple keys)
+                is_collection = isinstance(slot_val, list) or (isinstance(slot_val, dict) and len(slot_val) > 1)
+                if not is_collection:
+                    allowed_set_targets.append(f"{comp_id}.{slot_key}")
+            elems = comp.get("interactiveElements", [])
+            comp_selectors = []
+            for el in elems:
+                sel = el.get('selector', '')
+                tag = el.get('tagName', '')
+                text = el.get('text', '') or ''
+                disabled = el.get('disabled', False)
+                visible = el.get('visible', True)
+                if sel and visible and not disabled:
+                    registry_lines.append(f"  interactiveElement: selector={sel!r}  tag={tag}  text={text!r}")
+                    comp_selectors.append(sel)
+                elif sel:
+                    registry_lines.append(f"  interactiveElement: selector={sel!r}  tag={tag}  text={text!r}  [DISABLED or HIDDEN]")
+            if comp_selectors:
+                allowed_selectors_by_comp[comp_id] = comp_selectors
+            actions = comp.get("actions", [])
+            for action in (actions or []):
+                registry_lines.append(f"  action: {action}")
+                allowed_call_targets.append(f"{comp_id}.{action}")
+
+        registry_str = "\n".join(registry_lines) if registry_lines else "(empty - no components mounted yet)"
+        values_str = json.dumps(live_values, indent=2)
+
+        # Build explicit allowed-selector reference for the LLM
+        selector_lines = []
+        for comp_id, sels in allowed_selectors_by_comp.items():
+            selector_lines.append(f"  {comp_id}: " + ", ".join(sels))
+        allowed_selectors_str = "\n".join(selector_lines) if selector_lines else "  (none visible)"
+
+        # Build allowed callAction targets list (only real registered actions)
+        allowed_call_str = ("\n".join("  " + t for t in allowed_call_targets)
+                            if allowed_call_targets else "  (none — do NOT use callAction)")
+
+        # Detect current UI step and provide specific navigation guidance
+        step_hint_lines = []
+        step_nav_map = {
+            "details":  "Fill attendeeName and email, then click the 'Next Step' button (#btn-details-next).",
+            "options":  "Click the session toggle buttons to select sessions, then click the 'Next Step' button (#btn-options-next).",
+            "payment":  "Fill cardNumber, then click the 'Confirm and Pay' button (#btn-submit-booking) to submit.",
+        }
+        for comp_id in components_info:
+            active_step = live_values.get(f"{comp_id}.activeStep")
+            if active_step and active_step in step_nav_map:
+                step_hint_lines.append(
+                    f"CURRENT STEP: '{active_step}'. Instruction: {step_nav_map[active_step]}"
+                )
+                break
+        step_hint_str = "\n".join(step_hint_lines) if step_hint_lines else ""
 
         history_lines = []
         for h_idx, item in enumerate(state["action_history"]):
@@ -187,10 +363,51 @@ class AgentRunner:
             history_lines.append(f"{h_idx+1}. Command: {json.dumps(cmd)} -> Result: {changed}")
         history_str = "\n".join(history_lines) if history_lines else "No actions executed yet."
 
-        system_prompt = f"""You are an AI assistant controlling a React application state via a WebSocket Bridge.
-You receive the component registry schema showing mounted components, their state slots, and interactive DOM elements:
+        # Compute which goal success conditions are already satisfied by the current live state.
+        # Show these to the LLM so it knows NOT to re-click toggle buttons that are already done.
+        goal = state.get("goal")
+        satisfied_lines = []
+        unsatisfied_lines = []
+        if goal and hasattr(goal, "success_conditions"):
+            for cond in goal.success_conditions:
+                cond_target = cond.target  # e.g. "App#r9.selectedSessions"
+                cond_op = cond.operator    # e.g. "includes", "equals", "truthy"
+                cond_val = cond.value
+                raw_values = self._get_values_dict()
+                current_live = None
+                cond_target_comp, cond_target_slot = cond_target.rsplit(".", 1) if "." in cond_target else (cond_target, "")
+                cond_target_comp_clean = cond_target_comp.split("#", 1)[0].split(":", 1)[0]
+                
+                for k, v in raw_values.items():
+                    k_comp, k_slot = k.rsplit(".", 1) if "." in k else (k, "")
+                    k_comp_clean = k_comp.split("#", 1)[0].split(":", 1)[0]
+                    if k_comp_clean == cond_target_comp_clean and k_slot == cond_target_slot:
+                        current_live = v
+                        break
+                
+                is_sat = False
+                if cond_op == "equals":
+                    is_sat = current_live == cond_val
+                elif cond_op == "includes":
+                    is_sat = isinstance(current_live, list) and cond_val in current_live
+                elif cond_op == "truthy":
+                    is_sat = bool(current_live)
+                elif cond_op == "falsy":
+                    is_sat = not bool(current_live)
+                label = f"{cond_target} {cond_op} {cond_val}"
+                if is_sat:
+                    satisfied_lines.append(f"  ✓ {label}")
+                else:
+                    unsatisfied_lines.append(f"  ✗ {label}")
+
+        satisfied_str = "\n".join(satisfied_lines) if satisfied_lines else "  (none yet)"
+        unsatisfied_str = "\n".join(unsatisfied_lines) if unsatisfied_lines else "  (all done!)"
+
+        system_prompt = f"""You are an AI assistant controlling a React application via a WebSocket Bridge.
+Below is the CURRENT state of mounted components and their interactive elements.
+
 ---
-REGISTRY SCHEMA:
+COMPONENT REGISTRY (current page only):
 {registry_str}
 ---
 CURRENT STATE VALUES:
@@ -199,22 +416,41 @@ CURRENT STATE VALUES:
 ACTION HISTORY (What you tried and what happened):
 {history_str}
 ---
+GOAL CONDITIONS — ALREADY SATISFIED (do NOT perform any actions to change these):
+{satisfied_str}
+---
+GOAL CONDITIONS — STILL NEEDED:
+{unsatisfied_str}
+---
+{(step_hint_str + chr(10) + '---' + chr(10)) if step_hint_str else ''}
+Your goal is to fulfill the user request by outputting a JSON array of bridge commands.
+Only work on the STILL NEEDED conditions above. DO NOT re-do any ALREADY SATISFIED condition.
 
-Your goal is to parse the user's natural language request and output a JSON array of commands to execute.
+Available command types:
+1. setState  -> {{"type":"setState",  "target":"<ComponentID.slotKey>", "value":<val>}}
+2. callAction -> {{"type":"callAction", "target":"<ComponentID.actionName>", "args":[...]}}
+3. dispatchEvent -> {{"type":"dispatchEvent", "target":"<ComponentID>", "event":"click"|"change"|"focus", "payload":"<css-selector>"}}
 
-Available commands:
-1. State assignment:
-   {{"type": "setState", "commandId": "unique-id", "target": "ComponentID.stateKey", "value": val}}
-2. Store actions:
-   {{"type": "callAction", "commandId": "unique-id", "target": "ComponentID.actionName", "args": [arg1, arg2, ...]}}
-3. DOM interactions (events):
-   {{"type": "dispatchEvent", "commandId": "unique-id", "target": "ComponentID", "event": "click" | "focus" | "change", "payload": "selector-string-or-value"}}
+ALLOWED setState targets (ONLY use these exact strings for the target field of setState commands):
+{chr(10).join('  ' + t for t in allowed_set_targets)}
 
-CRITICAL RULES FOR COMMAND SELECTION:
-- For any dispatchEvent command, the "target" field MUST ALWAYS be the Component ID (e.g. "SecurityPanel#r5"). The "payload" field MUST contain the CSS selector string of the element (e.g. "#tab-security" or "#btn-save-security"). NEVER put a CSS selector string in the "target" field.
-- Always prefer dispatchEvent click commands for UI-based actions (such as clicking navigation tab buttons or other buttons).
-- Only use setState for inputs.
-- Respond ONLY with a valid JSON array of commands. No markdown blocks, no formatting.
+ALLOWED callAction targets (ONLY use these exact strings; if list is empty, do NOT use callAction):
+{allowed_call_str}
+
+ALLOWED dispatchEvent selectors per component (ONLY use these exact selector strings as payload):
+{allowed_selectors_str}
+
+CRITICAL RULES - follow these exactly:
+1. ONLY use selectors from the ALLOWED list above. DO NOT invent or guess selectors.
+2. ONLY use setState targets from the ALLOWED list above. DO NOT invent slot names.
+3. ONLY use callAction targets from the ALLOWED list above. DO NOT invent action names.
+4. For dispatchEvent: "target" = ComponentID (e.g. "App#r9"), "payload" = css selector (e.g. "#btn-details-next"). NEVER swap these.
+5. Plan commands for the CURRENT page/step only. After clicking a page navigation button (Next/Submit/Pay), stop — the planner re-runs for the next page.
+6. If a slot already has the correct value, skip its setState command.
+7. NEVER call setState on array/list slots (e.g. selectedSessions). Click the corresponding toggle button instead.
+8. Toggle buttons (e.g. session checkboxes) are ON/OFF — clicking again will REMOVE the item. If the condition is already satisfied, do NOT click that button again.
+9. Respond ONLY with a valid JSON array. No markdown fences, no extra text.
+10. Do NOT perform setState on state slots whose corresponding input/interactive elements are not currently visible in the COMPONENT REGISTRY. For example, if a form field input (such as cardNumber or selectedSessions) is not rendered on the current screen, do not set its state slot value until you navigate to the screen where it is rendered.
 """
         if self.business_context:
             system_prompt += f"\n\nBUSINESS CONTEXT & CRITICAL RULES:\n{self.business_context}"
@@ -252,6 +488,63 @@ CRITICAL RULES FOR COMMAND SELECTION:
             commands = json.loads(content)
             if not isinstance(commands, list):
                 commands = [commands]
+
+            # --- Post-parse validation & sanitization ---
+            # Build flat sets of what is allowed so we can filter invalid LLM output
+            allowed_set_targets_set = set(allowed_set_targets)
+            all_allowed_selectors_set = set()
+            for sels in allowed_selectors_by_comp.values():
+                all_allowed_selectors_set.update(sels)
+
+            sanitized = []
+            for raw_cmd in commands:
+                cmd_type = raw_cmd.get("type")
+                if cmd_type == "setState":
+                    target = raw_cmd.get("target", "")
+                    if target not in allowed_set_targets_set:
+                        print(f"{YELLOW}[Sanitizer] Dropping setState with invalid target: {target!r}{RESET}")
+                        continue
+                    # Skip if the slot already holds the exact desired value.
+                    # Prevents the LLM from redundantly setting already-correct slots,
+                    # which would trigger the repetition blocker and abort the whole batch.
+                    desired_val = raw_cmd.get("value")
+                    current_val = live_values.get(target)
+                    if current_val == desired_val:
+                        print(f"{CYAN}[Sanitizer] Skipping setState on {target!r} — already has value {json.dumps(desired_val)}.{RESET}")
+                        continue
+                elif cmd_type == "callAction":
+                    target = raw_cmd.get("target", "")
+                    # callAction MUST have a dot (ComponentID.actionName)
+                    if "." not in target:
+                        print(f"{YELLOW}[Sanitizer] Dropping malformed callAction (no action name): {target!r}{RESET}")
+                        continue
+                    # Validate against allowed actions list (must be explicitly registered)
+                    if target not in allowed_call_targets:
+                        print(f"{YELLOW}[Sanitizer] Dropping callAction with unregistered action: {target!r}{RESET}")
+                        continue
+                elif cmd_type == "dispatchEvent":
+                    payload = raw_cmd.get("payload")
+                    # If payload is a selector string, validate it's in the allowed list
+                    if isinstance(payload, str) and (payload.startswith("#") or payload.startswith(".")):
+                        if payload not in all_allowed_selectors_set:
+                            print(f"{YELLOW}[Sanitizer] Dropping dispatchEvent with unknown selector: {payload!r}{RESET}")
+                            continue
+
+                sanitized.append(raw_cmd)
+
+
+                # Stop planning after the first TRUE navigation click (page change).
+                # Session toggles / checkboxes are NOT navigation — do NOT break on them.
+                if cmd_type == "dispatchEvent" and raw_cmd.get("event") == "click":
+                    nav_indicators = ["btn-next", "btn-pay", "btn-submit", "btn-reset", "btn-back", "-next", "-pay"]
+                    payload = raw_cmd.get("payload", "") or ""
+                    if any(ind in payload.lower() for ind in nav_indicators):
+                        print(f"{CYAN}[Sanitizer] Navigation click detected ({payload!r}), truncating batch to prevent multi-page planning.{RESET}")
+                        break
+
+            commands = sanitized
+            # --- End sanitization ---
+
             return {"commands": commands, "status": "planned", "llm_calls_made": llm_calls_made}
         except Exception as e:
             print(f"{RED}LLM planning failed: {e}{RESET}")
@@ -287,7 +580,7 @@ CRITICAL RULES FOR COMMAND SELECTION:
                     break
 
             if is_repetition:
-                print(f"{YELLOW}[Repetition Blocked] Command {cmd.get('type')} on {cmd.get('target')} was previously ineffective. Blocking execution and forcing replanning.{RESET}")
+                print(f"{YELLOW}[Repetition Skipped] Command {cmd.get('type')} on {cmd.get('target')} was previously ineffective — skipping, not aborting batch.{RESET}")
                 action_history.append({
                     "command": cmd,
                     "state_changed": False,
@@ -295,12 +588,7 @@ CRITICAL RULES FOR COMMAND SELECTION:
                 })
                 consecutive_ineffective += 1
                 step_count += 1
-                return {
-                    "status": "replan",
-                    "action_history": action_history,
-                    "consecutive_ineffective_count": consecutive_ineffective,
-                    "step_count": step_count
-                }
+                continue  # Skip this command but keep executing the rest of the batch
 
             # 2. Capture state before
             values_before = self._get_values_dict()
@@ -316,7 +604,7 @@ CRITICAL RULES FOR COMMAND SELECTION:
                 elif cmd["type"] == "dispatchEvent":
                     success = await self.bridge.dispatch_event(cmd["target"], cmd["event"], cmd.get("payload"))
                 elif cmd["type"] == "callAction":
-                    success = await self.bridge.call_action(cmd["target"], cmd["args"])
+                    success = await self.bridge.call_action(cmd["target"], cmd.get("args", []))
                 elif cmd["type"] == "waitFor":
                     cond = cmd["condition"]
                     success = await self.bridge.wait_for(cmd["target"], cond["operator"], cond.get("value"), timeout_ms=cmd.get("timeoutMs", 5000))
@@ -341,6 +629,10 @@ CRITICAL RULES FOR COMMAND SELECTION:
             if state_changed:
                 print(f"{GREEN}[Progress] Command produced observable state changes.{RESET}")
                 consecutive_ineffective = 0
+                # If this was a navigation click, give React extra time to render the new page
+                # and for the bridge to receive updated interactiveElements via registryDelta
+                if cmd.get("type") == "dispatchEvent" and cmd.get("event") == "click":
+                    await asyncio.sleep(0.5)
             else:
                 print(f"{YELLOW}[Ineffective] Command produced NO state changes.{RESET}")
                 consecutive_ineffective += 1
@@ -363,8 +655,28 @@ CRITICAL RULES FOR COMMAND SELECTION:
                     step = steps[trace_step_index]
                     # Compare actual post_state values_after with step's expected post_state_snapshot
                     mismatch = False
+                    cleaned_after = {}
+                    for k_after, val_after in values_after.items():
+                        if "." in k_after:
+                            comp_after, slot_after = k_after.rsplit(".", 1)
+                            comp_after_clean = comp_after.split("#", 1)[0]
+                            cleaned_after[f"{comp_after_clean}.{slot_after}"] = val_after
+                        else:
+                            cleaned_after[k_after] = val_after
+
                     for k, val in step.post_state_snapshot.items():
-                        if values_after.get(k) != val:
+                        if "." in k:
+                            comp_k, slot_k = k.rsplit(".", 1)
+                            comp_k_clean = comp_k.split("#", 1)[0]
+                            cleaned_key = f"{comp_k_clean}.{slot_k}"
+                        else:
+                            cleaned_key = k
+
+                        if cleaned_key in cleaned_after:
+                            if cleaned_after[cleaned_key] != val:
+                                mismatch = True
+                                break
+                        else:
                             mismatch = True
                             break
                     
@@ -417,6 +729,11 @@ CRITICAL RULES FOR COMMAND SELECTION:
             print(f"{RED}Error: No React client connected. Please open the frontend in your browser.{RESET}")
             return {"status": "failed", "error": "No connection"}
 
+        # Wait up to 3 seconds for the component registry to populate/synchronize
+        start_wait = time.time()
+        while not self.bridge.graph.get_mounted_components() and (time.time() - start_wait) < 3.0:
+            await asyncio.sleep(0.1)
+
         # 1. Compile Goal
         snapshot = self.bridge.graph.snapshot()
         try:
@@ -442,7 +759,7 @@ CRITICAL RULES FOR COMMAND SELECTION:
         state: AgentState = {
             "query": query,
             "goal": goal,
-            "registry": snapshot.get("components", {}),
+            "registry": snapshot,
             "values": initial_val,
             "commands": [],
             "action_history": [],
@@ -508,6 +825,20 @@ CRITICAL RULES FOR COMMAND SELECTION:
                         names = sorted([c.display_name for c in mounted])
                         app_version_hash = hashlib.md5(json.dumps(names).encode("utf-8")).hexdigest()[:16]
 
+                        # Helper to compute structural signature of goal
+                        def compute_goal_signature(goal: Goal) -> str:
+                            sig_parts = []
+                            for cond in goal.success_conditions:
+                                parts = cond.target.rsplit(".", 1)
+                                if len(parts) == 2:
+                                    comp_id, slot_key = parts
+                                    clean_comp = comp_id.split("#", 1)[0]
+                                    sig_parts.append(f"{clean_comp}.{slot_key}:{cond.operator}")
+                            sig_parts.sort()
+                            return ",".join(sig_parts)
+
+                        sig = compute_goal_signature(goal)
+
                         trace = GoldenTrace(
                             trace_id=str(uuid.uuid4()),
                             workflow_name=goal.description,
@@ -519,7 +850,8 @@ CRITICAL RULES FOR COMMAND SELECTION:
                             postcondition_state=self._get_values_dict(),
                             execution_time_ms=(time.time() - start_exec_time) * 1000.0,
                             llm_calls_made=result.get("llm_calls_made", 0),
-                            confidence=1.0
+                            confidence=1.0,
+                            structural_signature=sig
                         )
                         store.record_trace(trace)
                         print(f"{GREEN}[Trace Replay] Successfully recorded new golden trace (ID: {trace.trace_id}){RESET}")

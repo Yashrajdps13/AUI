@@ -187,16 +187,26 @@ class ContextWriter:
         for wf in workflows:
             pre_lines = []
             for pre in wf.get("preconditions", []):
-                pre_lines.append(f"- {pre['slot_target']} {pre['operator']}")
+                val_suffix = f" {pre['value']}" if pre.get("value") is not None else ""
+                pre_lines.append(f"- {pre['slot_target']} {pre['operator']}{val_suffix}")
             pre_str = "\n".join(pre_lines) if pre_lines else "None identified"
 
             step_lines = []
             for s in wf["steps"]:
-                step_lines.append(f"- {s['description']} ({s['target']} {s['operator']})")
+                val_suffix = f" {s['value']}" if s.get("value") is not None else ""
+                step_lines.append(f"- {s['description']} ({s['target']} {s['operator']}{val_suffix})")
             steps_str = "\n".join(step_lines)
 
+            sc = wf["success_condition"]
+            sc_val_suffix = f" {sc.value}" if sc.value is not None else ""
+            sc_str = f"{sc.target} {sc.operator}{sc_val_suffix}"
+
             fail_cond = wf["failure_condition"]
-            fail_str = f"{fail_cond.target} {fail_cond.operator}" if fail_cond else "None identified"
+            if fail_cond:
+                fc_val_suffix = f" {fail_cond.value}" if fail_cond.value is not None else ""
+                fail_str = f"{fail_cond.target} {fail_cond.operator}{fc_val_suffix}"
+            else:
+                fail_str = "None identified"
 
             workflows_sec += WORKFLOW_TEMPLATE.format(
                 workflow_name=wf["name"],
@@ -205,7 +215,7 @@ class ContextWriter:
                 avg_step_count=len(wf["steps"]),
                 preconditions=pre_str,
                 steps=steps_str,
-                success_condition=wf["success_condition"].target,
+                success_condition=sc_str,
                 failure_condition=fail_str
             )
             workflows_sec += "\n"
