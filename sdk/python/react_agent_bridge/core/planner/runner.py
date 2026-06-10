@@ -540,22 +540,63 @@ CRITICAL RULES - follow these exactly:
             )
             content = response.choices[0].message.content.strip()
 
-            match_json = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL)
-            if match_json:
-                content = match_json.group(1).strip()
-            else:
-                match_block = re.search(r"```\s*(.*?)\s*```", content, re.DOTALL)
-                if match_block:
-                    content = match_block.group(1).strip()
-                else:
-                    start = content.find("[")
-                    end = content.rfind("]")
-                    if start != -1 and end != -1 and end > start:
-                        content = content[start:end+1].strip()
+            commands = None
+            try:
+                commands = json.loads(content)
+            except Exception:
+                # Try JSON repair / extraction if first parse fails
+                content_stripped = content.strip()
+                # If wrapped as string array, e.g. ["{...}"] or [ "{...}" ] or ['{...}']
+                if (re.match(r'^\[\s*"\s*\{', content_stripped) and re.search(r'\}\s*"\s*\]$', content_stripped)) or \
+                   (re.match(r"^\[\s*'\s*\{", content_stripped) and re.search(r"\}\s*'\s*\]$", content_stripped)):
+                    first_curly = content_stripped.find('{')
+                    last_curly = content_stripped.rfind('}')
+                    if first_curly != -1 and last_curly != -1 and last_curly > first_curly:
+                        repaired = '[' + content_stripped[first_curly:last_curly+1] + ']'
+                        try:
+                            commands = json.loads(repaired)
+                        except Exception:
+                            pass
+                
+                # If still not parsed, try generic markdown block extraction
+                if commands is None:
+                    match_json = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL)
+                    if match_json:
+                        content_extracted = match_json.group(1).strip()
+                    else:
+                        match_block = re.search(r"```\s*(.*?)\s*```", content, re.DOTALL)
+                        if match_block:
+                            content_extracted = match_block.group(1).strip()
+                        else:
+                            start = content.find("[")
+                            end = content.rfind("]")
+                            if start != -1 and end != -1 and end > start:
+                                content_extracted = content[start:end+1].strip()
+                            else:
+                                content_extracted = content
+                    commands = json.loads(content_extracted)
 
-            commands = json.loads(content)
             if not isinstance(commands, list):
                 commands = [commands]
+
+            # Post-parse: If any command was parsed as a string (due to LLM wrapping elements in quotes),
+            # try to parse it as a JSON object.
+            parsed_commands = []
+            for cmd in commands:
+                if isinstance(cmd, str):
+                    try:
+                        parsed_cmd = json.loads(cmd)
+                        if isinstance(parsed_cmd, dict):
+                            parsed_commands.append(parsed_cmd)
+                        elif isinstance(parsed_cmd, list):
+                            parsed_commands.extend(parsed_cmd)
+                        else:
+                            parsed_commands.append(cmd)
+                    except Exception:
+                        parsed_commands.append(cmd)
+                else:
+                    parsed_commands.append(cmd)
+            commands = parsed_commands
 
             # Truncate batch at the first navigation click (page change) but keep it
             truncated = []
@@ -579,6 +620,7 @@ CRITICAL RULES - follow these exactly:
             }
         except Exception as e:
             print(f"{RED}LLM planning failed: {e}{RESET}")
+            print(f"{YELLOW}Raw LLM content was:\n{content}\n{RESET}")
             return {
                 "commands": [],
                 "status": "failed",

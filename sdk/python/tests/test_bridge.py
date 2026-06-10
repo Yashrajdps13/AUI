@@ -621,3 +621,51 @@ def test_target_mounted_rule_call_action():
 
     res = engine.evaluate(cmd, graph)
     assert res.valid is True
+
+
+@pytest.mark.asyncio
+async def test_plan_node_json_repair_reconstruction():
+    from react_agent_bridge.core.client import ReactAgentBridge
+    from react_agent_bridge.core.planner.runner import AgentRunner
+    from react_agent_bridge.core.planner.goal import Goal
+    from unittest.mock import patch, MagicMock
+
+    bridge = ReactAgentBridge(host="localhost", port=8000)
+    runner = AgentRunner(bridge, model="mock-model")
+
+    state = {
+        "query": "Click button",
+        "goal": Goal(description="Click button", success_conditions=[]),
+        "registry": {},
+        "values": {},
+        "commands": [],
+        "action_history": [],
+        "consecutive_ineffective_count": 0,
+        "step_count": 0,
+        "active_trace": None,
+        "trace_step_index": 0,
+        "llm_calls_made": 0
+    }
+
+    # 1. Unescaped quotes inside string element: ["{"type":"dispatchEvent", ...}"]
+    mock_res_1 = MagicMock()
+    mock_res_1.choices = [MagicMock(message=MagicMock(content='["{"type":"dispatchEvent","target":"DashboardView#r9","event":"click","payload":"#link-project-proj-1"}"]'))]
+
+    with patch("litellm.completion", return_value=mock_res_1):
+        res1 = runner._plan_node(state)
+        assert res1["status"] == "planned"
+        assert len(res1["commands"]) == 1
+        assert res1["commands"][0]["type"] == "dispatchEvent"
+        assert res1["commands"][0]["payload"] == "#link-project-proj-1"
+
+    # 2. Escaped quotes parsing to a string: ["{\"type\":\"dispatchEvent\", ...}"]
+    mock_res_2 = MagicMock()
+    mock_res_2.choices = [MagicMock(message=MagicMock(content='["{\\"type\\":\\"dispatchEvent\\",\\"target\\":\\"DashboardView#r9\\",\\"event\\":\\"click\\",\\"payload\\":\\"#link-project-proj-1\\"}"]'))]
+
+    with patch("litellm.completion", return_value=mock_res_2):
+        res2 = runner._plan_node(state)
+        assert res2["status"] == "planned"
+        assert len(res2["commands"]) == 1
+        assert res2["commands"][0]["type"] == "dispatchEvent"
+        assert res2["commands"][0]["payload"] == "#link-project-proj-1"
+
