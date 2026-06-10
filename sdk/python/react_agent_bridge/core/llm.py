@@ -48,9 +48,9 @@ class BaseLLMAdapter(ABC):
 class LiteLLMAdapter(BaseLLMAdapter):
     """
     Concrete implementation of BaseLLMAdapter using the LiteLLM library.
-    Defaults to the gemini/gemma-4-31b-it model.
+    Defaults to the ollama/qwen2.5:7b model.
     """
-    def __init__(self, model: str = "gemini/gemma-4-31b-it"):
+    def __init__(self, model: str = "ollama/qwen2.5:7b"):
         self.model = model
 
     async def call(self, prompt: str, tools: list, goal: Goal) -> StructuredAction:
@@ -205,6 +205,14 @@ Output strictly valid JSON only. Do not wrap in markdown blocks or include expla
         if not gemini_key and not litellm_key and "gemini" in self.model:
             raise LLMError("Neither GEMINI_API_KEY nor LITELLM_API_KEY environment variable is set.")
 
+        # Extract allowed target state slots dynamically to prevent hallucination
+        allowed_targets = []
+        comps = registry_snapshot.get("components", registry_snapshot) if isinstance(registry_snapshot, dict) else {}
+        for comp_id, comp_data in comps.items():
+            if isinstance(comp_data, dict) and "stateSlots" in comp_data:
+                for slot_key in comp_data["stateSlots"].keys():
+                    allowed_targets.append(f"{comp_id}.{slot_key}")
+
         prompt = f"""
         Translate the following user natural language query into a structured Goal object with success and failure conditions, based on the current component registry state.
         
@@ -213,19 +221,22 @@ Output strictly valid JSON only. Do not wrap in markdown blocks or include expla
         Active Registry Snapshot:
         {json.dumps(registry_snapshot, indent=2)}
         
+        Allowed Target State Slots:
+        {json.dumps(allowed_targets, indent=2)}
+        
         Goal JSON Schema:
         {{
             "description": "Natural language description of the goal",
             "success_conditions": [
                 {{
-                    "target": "The exact ComponentID from the active registry snapshot keys, followed by a dot, followed by the state slot key. (For example, if the component ID in the snapshot keys is 'App#r3', the target must be 'App#r3.username' rather than 'App.username')",
+                    "target": "The exact target slot chosen strictly from the 'Allowed Target State Slots' list.",
                     "operator": "equals | truthy | falsy | changed",
                     "value": "optional value to match if operator is equals, e.g. true, 'admin', null"
                 }}
             ],
             "failure_conditions": [
                 {{
-                    "target": "The exact ComponentID from the active registry snapshot keys, followed by a dot, followed by the state slot key.",
+                    "target": "The exact target slot chosen strictly from the 'Allowed Target State Slots' list.",
                     "operator": "equals | truthy | falsy | changed",
                     "value": "optional value"
                 }}
@@ -235,13 +246,14 @@ Output strictly valid JSON only. Do not wrap in markdown blocks or include expla
         }}
         
         CRITICAL RULES FOR GOAL COMPILATION:
-        1. You MUST use the exact keys from the "components" dictionary of the active registry snapshot as the ComponentID in your targets. Do not strip hashes, suffixes, or simplify the ID. For example, if the snapshot contains component "App#r3", use "App#r3.username" as the target, NOT "App.username".
-        2. If the user query explicitly mentions inputs, credentials, or values (e.g. "username agent_john" or "password test123"), you MUST include success conditions verifying that the corresponding component UI state slots are updated to those expected values, in addition to the final outcome condition (e.g. "AuthStore.token" truthy).
+        1. For success_conditions and failure_conditions, the "target" field MUST be chosen strictly from the "Allowed Target State Slots" list. Do NOT guess, invent, or use any target path that is not present in that list.
+        2. You MUST use the exact strings from "Allowed Target State Slots" as the target in your conditions. For example, if the list contains "App#r9.attendeeName", use exactly "App#r9.attendeeName", NOT "App.attendeeName" or "PassesStore.pass_holder_name".
+        3. If the user query explicitly mentions inputs, credentials, or values (e.g. "John Doe" or "john@test.com" or card "5555666677778888"), you MUST include success conditions verifying that the corresponding component UI state slots from the allowed list are updated to those expected values, in addition to the final outcome condition.
         
         CRITICAL RULES FOR FAILURE CONDITIONS:
         1. Failure conditions are evaluated at every single step, INCLUDING step 0 (before the agent has executed any actions).
         2. Do NOT include failure conditions that are True in the initial state, or that are simply the logical negations of the success conditions (e.g. if the success condition is 'token is truthy', do NOT set a failure condition of 'token is falsy', as it starts falsy and would fail the run immediately at step 0).
-        3. Only use failure conditions to watch for explicit error messages, error state slots, or invalid state paths (e.g. AuthStore.error_message truthy).
+        3. Only use failure conditions to watch for explicit error messages, error state slots, or invalid state paths.
         4. If there are no clear error states or invalid conditions to monitor, leave "failure_conditions" as an empty list: [].
         
         Output strictly valid JSON only. Do not wrap in markdown blocks.

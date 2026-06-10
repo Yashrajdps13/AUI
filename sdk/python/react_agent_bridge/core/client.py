@@ -190,6 +190,9 @@ class ReactAgentBridge(CommandDispatcher):
         elif msg_type == "renderSettled":
             logger.debug(f"React commit rendering settled for target: {msg.target}")
 
+        elif msg_type == "interaction":
+            logger.debug(f"React client interaction: {msg.event} on {msg.componentId} ({msg.selector})")
+
         else:
             logger.warning(f"Unhandled message type: {msg_type}")
 

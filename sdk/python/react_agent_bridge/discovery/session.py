@@ -59,8 +59,8 @@ class DiscoverySession:
 
         self.annotator = SlotAnnotationEngine(self.corpus)
         self.wf_engine = WorkflowInferenceEngine(self.corpus)
-        self.pre_engine = PreconditionInferenceEngine(self.corpus)
-        self.constraint_engine = ConstraintInferenceEngine(self.corpus)
+        self.pre_engine = PreconditionInferenceEngine(self.corpus, min_pairs=1)
+        self.constraint_engine = ConstraintInferenceEngine(self.corpus, min_sessions=self.min_sessions)
 
         # Register connection listeners on bridge
         self.bridge.add_listener("connect", self._on_connect)
@@ -184,7 +184,10 @@ class DiscoverySession:
         annotations = await self.annotator.analyze()
 
         # 2. Run workflow inference engine
-        workflows = await self.wf_engine.analyze(min_confidence=self.min_confidence_for_workflow)
+        workflows = await self.wf_engine.analyze(
+            min_confidence=self.min_confidence_for_workflow,
+            llm_adapter=self.bridge.llm_adapter
+        )
 
         # 3. Run precondition engine
         preconditions = await self.pre_engine.analyze_preconditions(workflows)

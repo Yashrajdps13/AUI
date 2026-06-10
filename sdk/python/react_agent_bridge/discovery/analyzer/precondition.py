@@ -3,6 +3,7 @@ import json
 import logging
 from typing import Dict, Any, List, Optional, Tuple
 from react_agent_bridge.discovery.corpus import ObservationCorpus
+from react_agent_bridge.discovery.recorder import is_probably_sensitive
 
 logger = logging.getLogger("react_agent_bridge.discovery.analyzer.precondition")
 
@@ -89,8 +90,7 @@ class PreconditionInferenceEngine:
 
                 if len(steps) < 2:
                     # Precondition analysis requires at least a transition between steps
-                    if wf_name not in self._preconditions:
-                        self._preconditions[wf_name] = []
+                    self._preconditions[wf_name] = []
                     continue
 
                 # Analyze transitions between steps S_{i-1} and S_i
@@ -103,120 +103,165 @@ class PreconditionInferenceEngine:
                     prev_comp, prev_slot = prev_target.rsplit(".", 1)
                     curr_comp, curr_slot = curr_target.rsplit(".", 1)
 
-                    # 1. Identify success and stalled sessions
-                    # Success: prev_target changed at T1, curr_target changed at T2 within 10s
-                    query_success = """
-                        SELECT DISTINCT e1.session_id, e1.timestamp, e2.timestamp
-                        FROM events e1
-                        JOIN events e2 ON e1.session_id = e2.session_id
-                        WHERE e1.event_type = 'SLOT_CHANGED' AND e1.component_display_name = ? AND e1.slot_key = ?
-                          AND e2.event_type = 'SLOT_CHANGED' AND e2.component_display_name = ? AND e2.slot_key = ?
-                          AND e2.timestamp >= e1.timestamp AND e2.timestamp <= e1.timestamp + 10.0
-                    """
-                    params_success = [prev_comp, prev_slot, curr_comp, curr_slot]
-                    if after_ts:
-                        query_success += " AND e1.timestamp >= ?"
-                        params_success.append(after_ts)
-                    
-                    cursor.execute(query_success, params_success)
-                    success_sessions = cursor.fetchall()
+                    # Get terminal target details from the last step of the workflow
+                    term_step = steps[-1]
+                    term_target = term_step["target"]
+                    term_comp, term_slot = term_target.rsplit(".", 1)
+                    term_val = term_step["value"]
+                    term_val_json = json.dumps(term_val)
 
-                    # Stalled: prev_target changed at T1, but curr_target did not change within 10s (or at all)
-                    query_stalled = """
-                        SELECT DISTINCT e1.session_id, e1.timestamp
-                        FROM events e1
-                        WHERE e1.event_type = 'SLOT_CHANGED' AND e1.component_display_name = ? AND e1.slot_key = ?
-                          AND e1.session_id NOT IN (
-                               SELECT DISTINCT session_id
-                               FROM events
-                               WHERE event_type = 'SLOT_CHANGED' AND component_display_name = ? AND slot_key = ?
-                                 AND timestamp >= e1.timestamp AND timestamp <= e1.timestamp + 10.0
-                           )
-                    """
-                    params_stalled = [prev_comp, prev_slot, curr_comp, curr_slot]
-                    if after_ts:
-                        query_stalled += " AND e1.timestamp >= ?"
-                        params_stalled.append(after_ts)
-                    
-                    cursor.execute(query_stalled, params_stalled)
-                    stalled_sessions = cursor.fetchall()
+                    # 1. Fetch success sessions for this workflow (reached success condition)
+                    cursor.execute("""
+                        SELECT DISTINCT session_id
+                        FROM events
+                        WHERE event_type = 'SLOT_CHANGED'
+                          AND component_display_name = ?
+                          AND slot_key = ?
+                          AND new_value_json = ?
+                    """, (term_comp, term_slot, term_val_json))
+                    success_sids = [r[0] for r in cursor.fetchall()]
 
-                    if len(success_sessions) < self.min_pairs or len(stalled_sessions) < self.min_pairs:
+                    if not success_sids:
                         continue
 
-                    # 2. Extract slot values immediately before transition (at T1)
-                    success_states = [
-                        self._get_slot_values_at_timestamp(cursor, sid, t_prev)
-                        for sid, t_prev, _ in success_sessions
-                    ]
-                    stalled_states = [
-                        self._get_slot_values_at_timestamp(cursor, sid, t_prev)
-                        for sid, t_prev in stalled_sessions
-                    ]
+                    # 2. In each session, find T1 (last change to prev_target before t_success)
+                    # and T2 (last change to curr_target before t_success)
+                    success_instances = []
+                    for sid in success_sids:
+                        # Find t_success (first time terminal state is reached)
+                        cursor.execute("""
+                            SELECT MIN(timestamp)
+                            FROM events
+                            WHERE session_id = ?
+                              AND event_type = 'SLOT_CHANGED'
+                              AND component_display_name = ?
+                              AND slot_key = ?
+                              AND new_value_json = ?
+                        """, (sid, term_comp, term_slot, term_val_json))
+                        t_success_row = cursor.fetchone()
+                        t_success = t_success_row[0] if t_success_row else None
+                        if not t_success:
+                            # Fallback to last event timestamp in session
+                            cursor.execute("SELECT MAX(timestamp) FROM events WHERE session_id = ?", (sid,))
+                            t_success = cursor.fetchone()[0]
+                        if not t_success:
+                            continue
 
-                    # Find all unique slot keys across all states
+                        # Find last change to prev_target before t_success
+                        cursor.execute("""
+                            SELECT MAX(timestamp)
+                            FROM events
+                            WHERE session_id = ?
+                              AND event_type = 'SLOT_CHANGED'
+                              AND component_display_name = ?
+                              AND slot_key = ?
+                              AND timestamp <= ?
+                        """, (sid, prev_comp, prev_slot, t_success))
+                        t1 = cursor.fetchone()[0]
+
+                        # Find last change to curr_target before t_success
+                        cursor.execute("""
+                            SELECT MAX(timestamp)
+                            FROM events
+                            WHERE session_id = ?
+                              AND event_type = 'SLOT_CHANGED'
+                              AND component_display_name = ?
+                              AND slot_key = ?
+                              AND timestamp <= ?
+                        """, (sid, curr_comp, curr_slot, t_success))
+                        t2 = cursor.fetchone()[0]
+
+                        if t1 is not None and t2 is not None and t1 <= t2:
+                            success_instances.append((sid, t1, t2))
+
+                    if not success_instances:
+                        continue
+
+                    # 3. Extract slot states immediately before transition (at T2) and at start of session
+                    before_states = {}
+                    start_states = {}
+                    for sid, t1, t2 in success_instances:
+                        # Get session started_at
+                        cursor.execute("SELECT started_at FROM sessions WHERE session_id = ?", (sid,))
+                        t_start = cursor.fetchone()[0]
+
+                        # Fetch all keys to populate before_states
+                        raw_states = self._get_slot_values_at_timestamp(cursor, sid, t2 - 0.001)
+                        before_states[sid] = {}
+                        for k, val in raw_states.items():
+                            if is_probably_sensitive(k):
+                                # Sensitive check: did it change after mount burst (t_start + 1.0) and before t2?
+                                cursor.execute("""
+                                    SELECT COUNT(*)
+                                    FROM events
+                                    WHERE session_id = ?
+                                      AND event_type = 'SLOT_CHANGED'
+                                      AND component_display_name || '.' || slot_key = ?
+                                      AND timestamp > ? AND timestamp <= ?
+                                """, (sid, k, t_start + 1.0, t2))
+                                count = cursor.fetchone()[0]
+                                before_states[sid][k] = "[REDACTED]" if count > 0 else ""
+                            else:
+                                before_states[sid][k] = val
+
+                        cursor.execute("""
+                            SELECT component_display_name || '.' || slot_key, new_value_json
+                            FROM events
+                            WHERE session_id = ? AND previous_value_json IS NULL
+                        """, (sid,))
+                        start_states[sid] = {}
+                        for k_name, val_j in cursor.fetchall():
+                            if k_name and is_probably_sensitive(k_name):
+                                start_states[sid][k_name] = ""
+                            elif k_name:
+                                try:
+                                    start_states[sid][k_name] = json.loads(val_j) if val_j else None
+                                except Exception:
+                                    start_states[sid][k_name] = val_j
+
+                    # Find all unique slot keys across before_states
                     all_keys = set()
-                    for state in success_states + stalled_states:
+                    for state in before_states.values():
                         all_keys.update(state.keys())
 
-                    # Exclude the step targets themselves to avoid trivial correlation
-                    all_keys.discard(prev_target)
                     all_keys.discard(curr_target)
+                    # Discard navigation slots
+                    all_keys = {k for k in all_keys if not any(nav in k for nav in ("activeStep", "route", "step", "activeTab"))}
 
-                    # 3. Correlate keys with patterns
                     for key in all_keys:
-                        # Patterns to evaluate: "truthy", "non_empty"
                         for operator in ["truthy", "non_empty"]:
-                            total_success_weight = sum(get_weight(sid) for (sid, _, _) in success_sessions)
-                            total_stalled_weight = sum(get_weight(sid) for (sid, _) in stalled_sessions)
-
-                            # Map indices manually to avoid using range/enumerate loop variables incorrectly
-                            success_matches = 0
-                            for idx_s, (sid, t_prev, _) in enumerate(success_sessions):
-                                if self._evaluate_pattern(success_states[idx_s].get(key), operator):
-                                    success_matches += get_weight(sid)
-
-                            stalled_matches = 0
-                            for idx_st, (sid, t_prev) in enumerate(stalled_sessions):
-                                if self._evaluate_pattern(stalled_states[idx_st].get(key), operator):
-                                    stalled_matches += get_weight(sid)
-
-                            success_ratio = success_matches / total_success_weight if total_success_weight > 0 else 0.0
-                            stalled_ratio = stalled_matches / total_stalled_weight if total_stalled_weight > 0 else 0.0
-
-                            # Condition: consistently holds in success sessions, violates in stalled sessions
-                            if success_ratio >= self.confidence_threshold and stalled_ratio <= (1 - self.confidence_threshold):
+                            # Check if the condition consistently holds before transition
+                            match_count = sum(
+                                1 for sid, t1, t2 in success_instances
+                                if self._evaluate_pattern(before_states[sid].get(key), operator)
+                            )
+                            # Check if it was empty at the start of the session
+                            not_start_count = sum(
+                                1 for sid, t1, t2 in success_instances
+                                if not self._evaluate_pattern(start_states[sid].get(key), operator)
+                            )
+                            
+                            # If it holds in 100% of transitions and was not true at the start
+                            if match_count == len(success_instances) and not_start_count == len(success_instances):
                                 preconditions.append({
                                     "slot_target": key,
                                     "required_condition": f"{key} must be {operator}",
                                     "operator": operator,
                                     "value": None,
                                     "pattern": None,
-                                    "confidence": success_ratio,
-                                    "session_count": len(success_sessions)
+                                    "confidence": 1.0,
+                                    "session_count": len(success_instances)
                                 })
 
-                if wf_name not in self._preconditions:
-                    self._preconditions[wf_name] = []
-
-                if after_ts:
-                    # Merge incrementally
-                    for new_pre in preconditions:
-                        existing_pre = None
-                        for ep in self._preconditions[wf_name]:
-                            if ep["slot_target"] == new_pre["slot_target"] and ep["operator"] == new_pre["operator"]:
-                                existing_pre = ep
-                                break
-                        if existing_pre:
-                            old_count = existing_pre["session_count"]
-                            new_count = new_pre["session_count"]
-                            if old_count + new_count > 0:
-                                existing_pre["confidence"] = (existing_pre["confidence"] * old_count + new_pre["confidence"] * new_count) / (old_count + new_count)
-                            existing_pre["session_count"] = old_count + new_count
-                        else:
-                            self._preconditions[wf_name].append(new_pre)
-                else:
-                    self._preconditions[wf_name] = preconditions
+                 # De-duplicate preconditions
+                unique_preconditions = []
+                seen_pre = set()
+                for pre in preconditions:
+                    pre_key = (pre["slot_target"], pre["operator"])
+                    if pre_key not in seen_pre:
+                        seen_pre.add(pre_key)
+                        unique_preconditions.append(pre)
+                self._preconditions[wf_name] = unique_preconditions
 
         except Exception as e:
             logger.error(f"Error in PreconditionInferenceEngine: {e}", exc_info=True)

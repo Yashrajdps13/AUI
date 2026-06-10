@@ -68,7 +68,7 @@ async def run_agent():
     await bridge.wait_for_client()
     print(f"{GREEN}Connected! Running registration flow...{RESET}")
     
-    query = "Register a VIP Pass for Alice Smith with email alice@test.com, select AI Masterclass and Hands-on Labs, then pay and submit using card 1111222233334444"
+    query = "Register a Standard Pass for John Doe with email john@test.com, select Networking Dinner, then pay and submit using card 5555666677778888"
     
     try:
         # First execution (LLM planning)
