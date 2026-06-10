@@ -287,6 +287,9 @@ class AgentRunner:
         # current page's components/elements (not the stale initial snapshot).
         live_snapshot = self.bridge.graph.snapshot()
         live_values = self._get_values_dict()
+        state["registry"] = live_snapshot
+        state["values"] = live_values
+
 
         # Build a concise, flat representation of the current registry for the LLM.
         # This prevents small models from getting confused by deeply-nested JSON.
@@ -432,9 +435,10 @@ Your goal is to fulfill the user request by outputting a JSON array of bridge co
 Only work on the STILL NEEDED conditions above. DO NOT re-do any ALREADY SATISFIED condition.
 
 Available command types:
-1. setState  -> {{"type":"setState",  "target":"<ComponentID.slotKey>", "value":<val>}}
-2. callAction -> {{"type":"callAction", "target":"<ComponentID.actionName>", "args":[...]}}
+1. setState      -> {{"type":"setState",      "target":"<ComponentID.slotKey>", "value":<val>}}
+2. callAction    -> {{"type":"callAction",    "target":"<ComponentID.actionName>", "args":[...]}}
 3. dispatchEvent -> {{"type":"dispatchEvent", "target":"<ComponentID>", "event":"click"|"change"|"focus", "payload":"<css-selector>"}}
+4. waitFor       -> {{"type":"waitFor",       "target":"<ComponentID>|<ComponentID.slotKey>", "condition": {{"operator":"truthy"|"falsy"|"equals", "value":<val>}}, "timeoutMs":5000}}
 
 ALLOWED setState targets (ONLY use these exact strings for the target field of setState commands):
 {chr(10).join('  ' + t for t in allowed_set_targets)}
@@ -446,9 +450,9 @@ ALLOWED dispatchEvent selectors per component (ONLY use these exact selector str
 {allowed_selectors_str}
 
 CRITICAL RULES - follow these exactly:
-1. ONLY use selectors from the ALLOWED list above. DO NOT invent or guess selectors.
-2. ONLY use setState targets from the ALLOWED list above. DO NOT invent slot names.
-3. ONLY use callAction targets from the ALLOWED list above. DO NOT invent action names.
+1. Every target in every command (setState target, callAction target, dispatchEvent target and payload selector) MUST exactly match something currently visible in the COMPONENT REGISTRY or the ALLOWED lists above.
+2. DO NOT invent, guess, or reference any component IDs, slot names, action names, or selectors based on what you think should exist (e.g. from the goal description). If they are not in the registry snapshot, they do not exist.
+3. If a component, slot, action, or selector that you need is not in the registry snapshot yet, DO NOT guess it. Instead, you MUST use the `waitFor` command to wait for the target to appear, or stop.
 4. For dispatchEvent: "target" = ComponentID (e.g. "App#r9"), "payload" = css selector (e.g. "#btn-details-next"). NEVER swap these.
 5. Plan commands for the CURRENT page/step only. After clicking a page navigation button (Next/Submit/Pay), stop — the planner re-runs for the next page.
 6. If a slot already has the correct value, skip its setState command.
@@ -456,7 +460,7 @@ CRITICAL RULES - follow these exactly:
 8. Toggle buttons (e.g. session checkboxes) are ON/OFF — clicking again will REMOVE the item. If the condition is already satisfied, do NOT click that button again.
 9. Respond ONLY with a valid JSON array. No markdown fences, no extra text.
 10. Do NOT perform setState on state slots whose corresponding input/interactive elements are not currently visible in the COMPONENT REGISTRY. For example, if a form field input (such as cardNumber or selectedSessions) is not rendered on the current screen, do not set its state slot value until you navigate to the screen where it is rendered.
-"""
+11. If the required component is not mounted yet, wait for it to appear. Never plan actions on unmounted components."""
         if self.business_context:
             system_prompt += f"\n\nBUSINESS CONTEXT & CRITICAL RULES:\n{self.business_context}"
 
@@ -534,10 +538,23 @@ CRITICAL RULES - follow these exactly:
                         break
             commands = truncated
 
-            return {"commands": commands, "status": "planned", "llm_calls_made": llm_calls_made}
+            return {
+                "commands": commands,
+                "status": "planned",
+                "llm_calls_made": llm_calls_made,
+                "registry": live_snapshot,
+                "values": live_values
+            }
         except Exception as e:
             print(f"{RED}LLM planning failed: {e}{RESET}")
-            return {"commands": [], "status": "failed", "error": f"LLM planning failed: {e}", "llm_calls_made": llm_calls_made}
+            return {
+                "commands": [],
+                "status": "failed",
+                "error": f"LLM planning failed: {e}",
+                "llm_calls_made": llm_calls_made,
+                "registry": live_snapshot,
+                "values": live_values
+            }
 
     async def _execute_node(self, state: AgentState) -> Dict[str, Any]:
         commands = state["commands"]
@@ -760,6 +777,9 @@ CRITICAL RULES - follow these exactly:
                             logger.error(f"Failed to decay trace: {e}")
                         active_trace = None
                         trace_step_index = 0
+
+        # Sleep to allow React to render any final updates and WebSocket messages to be processed
+        await asyncio.sleep(0.5)
 
         return {
             "status": "executed",
