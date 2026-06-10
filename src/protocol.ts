@@ -43,7 +43,7 @@ export interface AppLogEntry {
 }
 
 export interface CommandAuditEntry {
-  commandId: string;
+  commandId?: string;
   type: 'setState' | 'dispatchEvent' | 'callAction';
   target: string;
   value: unknown;

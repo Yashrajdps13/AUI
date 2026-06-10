@@ -97,6 +97,10 @@ class BridgeStoreImpl {
    * Uses reference counting of active hooks to track active slots per component.
    */
   registerStateSlot(id: string, displayName: string, slot: StateSlot): void {
+    const keyLower = slot.key.toLowerCase();
+    if (keyLower === 'auditlog' || keyLower === 'auditlogs' || keyLower === 'ledger') {
+      return;
+    }
     const existing = this.registry.get(id);
     const nextRegistry = new Map(this.registry);
 
@@ -171,9 +175,14 @@ class BridgeStoreImpl {
    */
   registerComponent(id: string, entry: Omit<ComponentEntry, 'id'>): void {
     const nextRegistry = new Map(this.registry);
+    const filteredSlots = entry.stateSlots.filter(s => {
+      const keyLower = s.key.toLowerCase();
+      return keyLower !== 'auditlog' && keyLower !== 'auditlogs' && keyLower !== 'ledger';
+    });
     nextRegistry.set(id, {
       ...entry,
       id,
+      stateSlots: filteredSlots,
     });
     this.registry = nextRegistry;
     this.notify();

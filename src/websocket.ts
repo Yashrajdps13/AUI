@@ -41,6 +41,65 @@ class AgentWebSocketManagerImpl {
   // Allow overriding WebSocket class (for Node.js testing environments)
   public WebSocketClass: any = typeof WebSocket !== 'undefined' ? WebSocket : null;
 
+  // Keep track of agent-initiated mutations to filter out in the local UI logger
+  private agentInFlightMutations: Map<string, any> = new Map();
+
+  public consumeAgentMutation(target: string, value: any): boolean {
+    if (this.agentInFlightMutations.has(target)) {
+      const expectedValue = this.agentInFlightMutations.get(target);
+      const matches = typeof value === 'object' && value !== null
+        ? JSON.stringify(value) === JSON.stringify(expectedValue)
+        : value === expectedValue;
+      if (matches) {
+        this.agentInFlightMutations.delete(target);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Debounce timers and pending actions for state snapshots and audit logs
+  private debounceTimers: Map<string, any> = new Map();
+  private pendingSnapshots: Map<string, any> = new Map();
+
+  private sendSnapshot(target: string, value: any, valStr: string, isAgent: boolean, isInitialSync = false): void {
+    if (this.debounceTimers.has(target)) {
+      clearTimeout(this.debounceTimers.get(target));
+      this.debounceTimers.delete(target);
+    }
+    this.pendingSnapshots.delete(target);
+
+    this.send({
+      type: 'stateSnapshot',
+      target,
+      value,
+    });
+    this.lastSentValues.set(target, valStr);
+
+    if (!isAgent && !isInitialSync) {
+      CommandAuditLogger.addEntry({
+        type: 'setState',
+        target,
+        value,
+        success: true,
+        timestamp: Date.now(),
+      });
+    }
+  }
+
+  private flushSnapshot = (target: string, isAgent: boolean): void => {
+    const value = this.pendingSnapshots.get(target);
+    if (value === undefined) return;
+    const valStr = JSON.stringify(value);
+    this.sendSnapshot(target, value, valStr, isAgent);
+  };
+
+  public flushAllSnapshots = (): void => {
+    for (const target of Array.from(this.pendingSnapshots.keys())) {
+      this.flushSnapshot(target, false);
+    }
+  };
+
   /**
    * Connects to the agent backend WebSocket.
    */
@@ -116,6 +175,16 @@ class AgentWebSocketManagerImpl {
     this.lastSentRegistry.clear();
     this.lastSentValues.clear();
 
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('click', this.flushAllSnapshots);
+    }
+
+    for (const timer of this.debounceTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.debounceTimers.clear();
+    this.pendingSnapshots.clear();
+
     for (const watcher of this.activeWatchers.values()) {
       clearTimeout(watcher.timeoutTimer);
     }
@@ -159,6 +228,10 @@ class AgentWebSocketManagerImpl {
       });
     });
 
+    if (typeof window !== 'undefined') {
+      window.addEventListener('click', this.flushAllSnapshots);
+    }
+
     // Sync the registry updates
     this.unsubscribeStore = BridgeStore.subscribe(() => {
       this.syncRegistryAndSubscriptions();
@@ -172,6 +245,10 @@ class AgentWebSocketManagerImpl {
     BridgeStore.setAgentConnected(false);
     if (typeof document !== 'undefined') {
       document.body.classList.remove('aui-agent-mode');
+    }
+
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('click', this.flushAllSnapshots);
     }
 
     // Detach the agent logger listener
@@ -614,17 +691,28 @@ class AgentWebSocketManagerImpl {
 
       for (const slot of entry.stateSlots) {
         const target = `${componentId}.${slot.key}`;
-        const valueToSend = (slot.sensitive && slot.value) ? '[REDACTED]' : slot.value;
+        const isSensitive = slot.sensitive === true;
+        const valueToSend = (isSensitive && slot.value) ? '[REDACTED]' : slot.value;
         const valStr = JSON.stringify(valueToSend);
         const prevValStr = this.lastSentValues.get(target);
 
         if (forceFull || prevValStr !== valStr) {
-          this.send({
-            type: 'stateSnapshot',
-            target,
-            value: valueToSend,
-          });
-          this.lastSentValues.set(target, valStr);
+          const isAgent = this.consumeAgentMutation(target, slot.value);
+
+          if (!forceFull && !isAgent && typeof valueToSend === 'string' && valueToSend !== '[REDACTED]') {
+            // Debounce human text changes to prevent logging every single keystroke
+            this.pendingSnapshots.set(target, valueToSend);
+            if (this.debounceTimers.has(target)) {
+              clearTimeout(this.debounceTimers.get(target));
+            }
+            const timer = setTimeout(() => {
+              this.flushSnapshot(target, false);
+            }, 500);
+            this.debounceTimers.set(target, timer);
+          } else {
+            // Send immediately (initial sync, non-string, or agent-initiated)
+            this.sendSnapshot(target, valueToSend, valStr, isAgent, forceFull);
+          }
         }
       }
     }
@@ -634,6 +722,7 @@ class AgentWebSocketManagerImpl {
    * Dispatches inbound agent commands.
    */
   private handleCommand(command: AgentCommand): void {
+    this.flushAllSnapshots();
     const registry = BridgeStore.getSnapshot();
 
     switch (command.type) {
@@ -802,6 +891,7 @@ class AgentWebSocketManagerImpl {
 
         if (slot) {
           try {
+            this.agentInFlightMutations.set(command.target, command.value);
             startTransition(() => {
               slot.setter(command.value);
             });

@@ -32,6 +32,7 @@ class ReactAgentBridge(CommandDispatcher):
         self.business_logic_path = business_logic
         self.connection = None
         self._server = None
+        self._discovery_recorder = None
 
         from react_agent_bridge.core.rules.registry import RuleRegistry
         from react_agent_bridge.core.rules.engine import RulesEngine
@@ -144,6 +145,8 @@ class ReactAgentBridge(CommandDispatcher):
 
     async def _route_message(self, data: dict):
         """Routes and parses incoming bridge messages, updating graph and futures."""
+        if getattr(self, "_discovery_recorder", None):
+            await self._discovery_recorder.on_message(data)
         try:
             msg = parse_bridge_message(data)
         except Exception as e:
@@ -189,3 +192,31 @@ class ReactAgentBridge(CommandDispatcher):
 
         else:
             logger.warning(f"Unhandled message type: {msg_type}")
+
+    def discover(
+        self,
+        output_path: str = "./agent-context.md",
+        db_path: str = "./discovery.db",
+        min_sessions: int = 3,
+        inference_interval_hours: float = 24.0,
+        min_confidence_for_workflow: float = 0.6,
+        min_confidence_for_constraint: float = 0.7,
+        golden_trace_min_confidence: float = 0.8
+    ):
+        """
+        Starts Discovery Mode, returns a DiscoverySession.
+        """
+        from react_agent_bridge.discovery.session import DiscoverySession
+        session = DiscoverySession(
+            bridge=self,
+            output_path=output_path,
+            db_path=db_path,
+            min_sessions=min_sessions,
+            inference_interval_hours=inference_interval_hours,
+            min_confidence_for_workflow=min_confidence_for_workflow,
+            min_confidence_for_constraint=min_confidence_for_constraint,
+            golden_trace_min_confidence=golden_trace_min_confidence
+        )
+        self._discovery_recorder = session.recorder
+        return session
+

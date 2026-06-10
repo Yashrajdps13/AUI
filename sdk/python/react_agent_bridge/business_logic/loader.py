@@ -10,6 +10,27 @@ class BusinessLogicLoader:
     """
     Loads raw markdown content from string or file path, and handles watch-to-reload triggers.
     """
+    @classmethod
+    def from_discovery(cls, db_path: str = "discovery.db", on_reload: Optional[Callable[[str], None]] = None):
+        """
+        Reads the generated agent-context.md path from the discovery database and initializes the loader.
+        """
+        output_path = "./agent-context.md"
+        try:
+            import sqlite3
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+            conn.commit()
+            cursor.execute("SELECT value FROM settings WHERE key = 'output_path'")
+            row = cursor.fetchone()
+            if row:
+                output_path = row[0]
+            conn.close()
+        except Exception:
+            pass
+        return cls(path_or_str=output_path, on_reload=on_reload)
+
     def __init__(self, path_or_str: str, on_reload: Optional[Callable[[str], None]] = None):
         self.path_or_str = path_or_str
         self.on_reload = on_reload
