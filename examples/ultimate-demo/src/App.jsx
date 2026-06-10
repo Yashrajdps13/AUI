@@ -60,9 +60,7 @@ export const useStore = create((set, get) => ({
   }))
 }));
 
-bridgeZustand('AppStore', useStore, {
-  sensitiveKeys: ['password']
-});
+bridgeZustand('AuthStore', useStore);
 
 // ==========================================
 // 2. Global Event Logger for UI console

@@ -9,20 +9,9 @@ def target_mounted_rule(command: dict, graph: ApplicationStateGraph) -> Optional
     if not target:
         return None
 
-    cmd_type = command.get("type")
-    # setState, queryState, and callAction target formats contain the component ID before the last dot.
-    if cmd_type in ["setState", "queryState", "callAction"]:
+    # setState and queryState target format is ComponentId.slotKey
+    if command.get("type") in ["setState", "queryState"]:
         comp_id = target.rsplit(".", 1)[0] if "." in target else target
-    elif cmd_type == "waitFor":
-        # waitFor target can be ComponentId or ComponentId.slotKey
-        if "." in target:
-            possible_comp_id = target.rsplit(".", 1)[0]
-            if possible_comp_id in graph.components:
-                comp_id = possible_comp_id
-            else:
-                comp_id = target
-        else:
-            comp_id = target
     else:
         comp_id = target
 

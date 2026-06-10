@@ -489,153 +489,107 @@ async def test_plan_node_stuck_warnings_rejection():
         assert "You MUST read the COMPONENT REGISTRY and CURRENT STATE VALUES" in system_content
 
 
-def test_goal_condition_contains_and_changed():
-    from react_agent_bridge.core.planner.goal import GoalCondition
-    from react_agent_bridge.core.graph.state_graph import ApplicationStateGraph
-    from react_agent_bridge.core.models import SerializedComponentEntry, SerializedStateSlot, RegistryDeltaMessage
-
-    graph = ApplicationStateGraph()
-    slot_logs = SerializedStateSlot(key="consoleLogs", hookIndex=0)
-    slot_err = SerializedStateSlot(key="error", hookIndex=1)
-    comp = SerializedComponentEntry(
-        id="Layout#r1",
-        displayName="Layout",
-        mountedAt=1000,
-        route="/",
-        stateSlots=[slot_logs, slot_err]
-    )
-    graph.apply_delta(RegistryDeltaMessage(added=[comp], removed=[], updated=[]))
-
-    # Test changed operator on default empty values
-    graph.update_state_value("Layout#r1.consoleLogs", [])
-    cond_changed = GoalCondition(target="Layout#r1.consoleLogs", operator="changed", value="None")
-    assert cond_changed.evaluate(graph) is False
-
-    # Update value and test changed operator
-    graph.update_state_value("Layout#r1.consoleLogs", ["Created project Alpha"])
-    assert cond_changed.evaluate(graph) is True
-
-    # Test contains operator
-    cond_contains = GoalCondition(target="Layout#r1.consoleLogs", operator="contains", value="Created project Alpha")
-    assert cond_contains.evaluate(graph) is True
-
-    cond_contains_neg = GoalCondition(target="Layout#r1.consoleLogs", operator="contains", value="Completed task")
-    assert cond_contains_neg.evaluate(graph) is False
-
-
-def test_wait_for_parameterization_and_replay_failure():
+@pytest.mark.asyncio
+async def test_execute_node_wait_for_console_logs_rejection():
     from react_agent_bridge.core.client import ReactAgentBridge
     from react_agent_bridge.core.planner.runner import AgentRunner
-    from react_agent_bridge.core.planner.goal import Goal, GoalCondition
-    from react_agent_bridge.discovery.traces import GoldenTrace, GoldenTraceStep
-
+    from react_agent_bridge.core.planner.goal import Goal
+    
     bridge = ReactAgentBridge(host="localhost", port=8000)
     runner = AgentRunner(bridge, model="mock-model")
-
-    # Mock components in bridge graph
-    from react_agent_bridge.core.models import SerializedComponentEntry, SerializedStateSlot, RegistryDeltaMessage
-    slot_logs = SerializedStateSlot(key="consoleLogs", hookIndex=0)
-    comp = SerializedComponentEntry(id="Layout#r1", displayName="Layout", mountedAt=1000, route="/", stateSlots=[slot_logs])
-    bridge.graph.apply_delta(RegistryDeltaMessage(added=[comp], removed=[], updated=[]))
-
-    trace_step = GoldenTraceStep(
-        command_type="waitFor",
-        target="Layout#r1.consoleLogs",
-        value=5000,
-        condition={"operator": "contains", "value": "Project 'Nebula Core' created"},
-        post_state_snapshot={"Layout#r1.consoleLogs": ["Project 'Nebula Core' created"]}
-    )
-    trace = GoldenTrace(
-        trace_id="test-trace-id",
-        workflow_name="Test Workflow",
-        goal_description="Test Goal",
-        recorded_at=1000.0,
-        application_version_hash="hash",
-        precondition_state={},
-        steps=[trace_step],
-        postcondition_state={"Layout#r1.consoleLogs": ["Project 'Nebula Core' created"]},
-        execution_time_ms=100.0,
-        llm_calls_made=0
-    )
-
-    goal = Goal(
-        description="Test Goal",
-        success_conditions=[
-            GoalCondition(target="Layout#r1.consoleLogs", operator="contains", value="Project 'Synergy Alpha' created")
-        ]
-    )
-
+    
     state = {
-        "query": "Test Goal",
-        "goal": goal,
+        "query": "Wait for consoleLogs",
+        "goal": Goal(description="Wait for consoleLogs", success_conditions=[]),
         "registry": {},
         "values": {},
-        "commands": [],
+        "commands": [{"type": "waitFor", "target": "Layout.consoleLogs", "condition": {"operator": "changed"}}],
         "action_history": [],
         "consecutive_ineffective_count": 0,
         "step_count": 0,
-        "active_trace": trace,
-        "trace_step_index": 0,
-        "llm_calls_made": 0
+        "active_trace": None,
+        "trace_step_index": 0
     }
-
-    # Test parameterization replaces 'Nebula Core' with 'Synergy Alpha' in condition value
-    res = runner._plan_node(state)
-    cmd = res["commands"][0]
-    assert cmd["type"] == "waitFor"
-    assert cmd["target"] == "Layout#r1.consoleLogs"
-    assert cmd["condition"]["operator"] == "contains"
-    assert cmd["condition"]["value"] == "Project 'Synergy Alpha' created"
-    assert cmd["timeoutMs"] == 5000
-
-
-def test_target_mounted_rule_call_action_and_wait_for():
-    from react_agent_bridge.core.rules.registry import RuleRegistry
-    from react_agent_bridge.core.rules.engine import RulesEngine
-    from react_agent_bridge.core.graph.state_graph import ApplicationStateGraph
-    from react_agent_bridge.core.models import SerializedComponentEntry, RegistryDeltaMessage
-    from react_agent_bridge.core.rules.base_rules import target_mounted_rule
-
-    registry = RuleRegistry()
-    registry.add_rule(target_mounted_rule)
-    engine = RulesEngine(registry)
-    graph = ApplicationStateGraph()
-
-    comp = SerializedComponentEntry(
-        id="ZustandStore#AppStore", displayName="AppStore", mountedAt=100, route="/", actions=["loginAction"]
-    )
-    graph.apply_delta(RegistryDeltaMessage(added=[comp], removed=[], updated=[]))
-
-    # Test callAction target parsing
-    cmd_call = {"type": "callAction", "target": "ZustandStore#AppStore.loginAction"}
-    res_call = engine.evaluate(cmd_call, graph)
-    assert res_call.valid is True
-
-    # Test waitFor target parsing with component slot
-    cmd_wait_slot = {"type": "waitFor", "target": "ZustandStore#AppStore.isAuthenticated"}
-    res_wait_slot = engine.evaluate(cmd_wait_slot, graph)
-    assert res_wait_slot.valid is True
-
-    # Test waitFor target parsing with plain component (which exists)
-    cmd_wait_comp = {"type": "waitFor", "target": "ZustandStore#AppStore"}
-    res_wait_comp = engine.evaluate(cmd_wait_comp, graph)
-    assert res_wait_comp.valid is True
-
-    # Test invalid target formatting
-    cmd_invalid = {"type": "callAction", "target": "NonExistentStore.loginAction"}
-    res_invalid = engine.evaluate(cmd_invalid, graph)
-    assert res_invalid.valid is False
-    assert len(res_invalid.violations) == 1
-    assert res_invalid.violations[0].rule_name == "TargetMountedRule"
+    
+    result = await runner._execute_node(state)
+    
+    assert result["consecutive_ineffective_count"] == 1
+    assert result["step_count"] == 1
+    assert len(result["action_history"]) == 1
+    assert result["action_history"][0]["rejected"] is True
+    assert "contains a debug ledger or log field" in result["action_history"][0]["error"]
 
 
-
-
-
-
-
-
-
-
-
-
+@pytest.mark.asyncio
+async def test_litellm_adapter_compile_goal_retry_feedback():
+    import os
+    from react_agent_bridge.core.llm import LiteLLMAdapter
+    from unittest.mock import AsyncMock, patch
+    
+    # First mock choice returns a schema with "LoginView.error" as success condition (invalid target)
+    mock_choice_1 = AsyncMock()
+    mock_choice_1.message.content = """```json
+    {
+        "description": "Log in",
+        "success_conditions": [
+            {
+                "target": "LoginView.error",
+                "operator": "equals",
+                "value": ""
+            }
+        ],
+        "failure_conditions": [],
+        "max_steps": 10,
+        "timeout_seconds": 30.0
+    }
+    ```"""
+    
+    # Second mock choice returns a schema with "AuthStore.isAuthenticated" (valid target)
+    mock_choice_2 = AsyncMock()
+    mock_choice_2.message.content = """```json
+    {
+        "description": "Log in",
+        "success_conditions": [
+            {
+                "target": "AuthStore.isAuthenticated",
+                "operator": "equals",
+                "value": true
+            }
+        ],
+        "failure_conditions": [],
+        "max_steps": 10,
+        "timeout_seconds": 30.0
+    }
+    ```"""
+    
+    # Mock responses sequentially
+    mock_response_1 = AsyncMock()
+    mock_response_1.choices = [mock_choice_1]
+    
+    mock_response_2 = AsyncMock()
+    mock_response_2.choices = [mock_choice_2]
+    
+    adapter = LiteLLMAdapter(model="gemini/gemma-4-31b-it")
+    
+    with patch.dict(os.environ, {"GEMINI_API_KEY": "mock-key"}):
+        with patch("litellm.acompletion", side_effect=[mock_response_1, mock_response_2]) as mock_acompletion:
+            # Registry contains AuthStore.isAuthenticated and LoginView.error
+            registry_snapshot = {
+                "components": {
+                    "AuthStore": {
+                        "stateSlots": {"isAuthenticated": False}
+                    },
+                    "LoginView": {
+                        "stateSlots": {"error": ""}
+                    }
+                }
+            }
+            goal = await adapter.compile_goal("Login", registry_snapshot)
+            
+            # acompletion should be called twice (the first attempt failed validation and retried)
+            assert mock_acompletion.call_count == 2
+            assert goal.description == "Log in"
+            assert len(goal.success_conditions) == 1
+            assert goal.success_conditions[0].target == "AuthStore.isAuthenticated"
+            assert goal.success_conditions[0].operator == "equals"
+            assert goal.success_conditions[0].value is True

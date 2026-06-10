@@ -57,15 +57,7 @@ class GoalCondition:
         elif self.operator == "falsy":
             return not bool(val)
         elif self.operator == "changed":
-            if self.value is not None and self.value != "None" and self.value != "":
-                return str(val) != str(self.value)
-            return val is not None and val != [] and val != "" and val != {}
-        elif self.operator in ["contains", "includes"]:
-            if isinstance(val, str) and isinstance(self.value, str):
-                return self.value in val
-            if isinstance(val, list):
-                return any(self.value == item or str(self.value) in str(item) for item in val)
-            return False
+            return val is not None
         return False
 
 

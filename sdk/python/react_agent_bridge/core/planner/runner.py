@@ -18,6 +18,7 @@ RED = "\033[1;31m"
 YELLOW = "\033[1;33m"
 GREEN = "\033[1;32m"
 CYAN = "\033[1;36m"
+MAGENTA = "\033[1;35m"
 RESET = "\033[0m"
 
 
@@ -95,6 +96,44 @@ class AgentRunner:
                 res[f"{comp.id}.{slot_key}"] = slot.value
         return res
 
+    def _compute_goal_signature(self, goal: Goal) -> str:
+        sig_parts = []
+        for cond in goal.success_conditions:
+            parts = cond.target.rsplit(".", 1)
+            if len(parts) == 2:
+                comp_id, slot_key = parts
+                clean_comp = comp_id.split("#", 1)[0]
+                sig_parts.append(f"{clean_comp}.{slot_key}:{cond.operator}")
+        sig_parts.sort()
+        return ",".join(sig_parts)
+
+    async def _decompose_goal(self, query: str) -> List[str]:
+        if self.model == "mock-model":
+            return [query]
+        try:
+            import litellm
+            messages = [
+                {"role": "system", "content": "You are a task decomposer that breaks down user requests into a JSON list of sequential strings representing execution stages. Output strictly valid JSON only."},
+                {"role": "user", "content": f"""Decompose the following goal into a JSON list of sequential, single-step execution stages:
+Goal: "{query}"
+
+Output strictly a JSON array of strings, e.g. ["stage 1", "stage 2"]. Do not add any markdown formatting or extra text."""}
+            ]
+            response = litellm.completion(
+                model=self.model,
+                messages=messages,
+                temperature=0.0
+            )
+            content = response.choices[0].message.content.strip()
+            # Clean markdown code blocks if present
+            content = content.replace("```json", "").replace("```", "").strip()
+            stages = json.loads(content)
+            if isinstance(stages, list) and all(isinstance(s, str) for s in stages):
+                return stages
+        except Exception as e:
+            logger.warning(f"Decomposition failed, using original goal as a single stage: {e}")
+        return [query]
+
     def _plan_node(self, state: AgentState) -> Dict[str, Any]:
         # Initialize trace variables in state if missing
         active_trace = state.get("active_trace")
@@ -103,15 +142,8 @@ class AgentRunner:
 
         # Helper to compute structural signature of goal
         def compute_goal_signature(goal: Goal) -> str:
-            sig_parts = []
-            for cond in goal.success_conditions:
-                parts = cond.target.rsplit(".", 1)
-                if len(parts) == 2:
-                    comp_id, slot_key = parts
-                    clean_comp = comp_id.split("#", 1)[0]
-                    sig_parts.append(f"{clean_comp}.{slot_key}:{cond.operator}")
-            sig_parts.sort()
-            return ",".join(sig_parts)
+            return self._compute_goal_signature(goal)
+
 
         # Helper to parameterize golden trace commands based on current goal
         def get_parameterized_cmd(step: Any, trace: Any, current_goal: Goal) -> Optional[dict]:
@@ -144,7 +176,7 @@ class AgentRunner:
                 
             val_map = {}
             for cond in current_goal.success_conditions:
-                if cond.operator not in ["equals", "includes", "contains"]:
+                if cond.operator not in ["equals", "includes"]:
                     continue
                 parts = cond.target.rsplit(".", 1)
                 if len(parts) != 2:
@@ -204,43 +236,6 @@ class AgentRunner:
                             selector = selector.replace(str(orig_val), str(curr_val))
                             
                 cmd["payload"] = selector
-            elif step.command_type == "waitFor":
-                cond = dict(step.condition) if step.condition else {}
-                if "value" in cond:
-                    val = cond["value"]
-                    if "." in step.target:
-                        target_comp, target_slot = step.target.rsplit(".", 1)
-                        target_comp_clean = target_comp.split("#", 1)[0]
-                        matched_val = False
-                        for orig_target, (orig_val, curr_val) in val_map.items():
-                            orig_comp, orig_slot = orig_target.rsplit(".", 1)
-                            orig_comp_clean = orig_comp.split("#", 1)[0]
-                            if orig_comp_clean == target_comp_clean and orig_slot == target_slot:
-                                val = curr_val
-                                matched_val = True
-                                break
-                        if not matched_val and isinstance(val, str):
-                            for orig_target, (orig_val, curr_val) in val_map.items():
-                                if isinstance(orig_val, list) and isinstance(curr_val, list):
-                                    for o_i, c_i in zip(orig_val, curr_val):
-                                        if str(o_i) in val:
-                                            val = val.replace(str(o_i), str(c_i))
-                                else:
-                                    if str(orig_val) in val:
-                                        val = val.replace(str(orig_val), str(curr_val))
-                    elif isinstance(val, str):
-                        for orig_target, (orig_val, curr_val) in val_map.items():
-                            if isinstance(orig_val, list) and isinstance(curr_val, list):
-                                for o_i, c_i in zip(orig_val, curr_val):
-                                    if str(o_i) in val:
-                                        val = val.replace(str(o_i), str(c_i))
-                            else:
-                                if str(orig_val) in val:
-                                    val = val.replace(str(orig_val), str(curr_val))
-                    cond["value"] = val
-                cmd["condition"] = cond
-                if step.value is not None:
-                    cmd["timeoutMs"] = step.value
             else:
                 if step.value is not None:
                     cmd["value"] = step.value
@@ -497,9 +492,7 @@ CRITICAL RULES - follow these exactly:
 8. Toggle buttons (e.g. session checkboxes) are ON/OFF — clicking again will REMOVE the item. If the condition is already satisfied, do NOT click that button again.
 9. Respond ONLY with a valid JSON array. No markdown fences, no extra text.
 10. Do NOT perform setState on state slots whose corresponding input/interactive elements are not currently visible in the COMPONENT REGISTRY. For example, if a form field input (such as cardNumber or selectedSessions) is not rendered on the current screen, do not set its state slot value until you navigate to the screen where it is rendered.
-11. If the required component is not mounted yet, wait for it to appear. Never plan actions on unmounted components.
-12. Only call store actions via callAction when you have complete knowledge of their expected arguments and behavior. If an action's arguments are not documented, or if you are logging in or submitting forms, prefer interacting with visible DOM/UI elements (e.g. setting state slots corresponding to input fields and clicking buttons via dispatchEvent) instead of calling store actions directly.
-13. Always enter sensitive inputs (like passwords) using the corresponding input element's state slot and dispatching the 'change' and 'click' events on the form button."""
+11. If the required component is not mounted yet, wait for it to appear. Never plan actions on unmounted components."""
         if self.business_context:
             system_prompt += f"\n\nBUSINESS CONTEXT & CRITICAL RULES:\n{self.business_context}"
 
@@ -666,6 +659,10 @@ CRITICAL RULES - follow these exactly:
                 if isinstance(payload, str) and (payload.startswith("#") or payload.startswith(".")):
                     if payload not in all_allowed_selectors_set:
                         rejection_reason = f"Command rejected: selector '{payload}' is not in the current registry. The component may have unmounted or selector is invalid. Check the current registry before retrying."
+            elif cmd_type == "waitFor":
+                target = cmd.get("target", "")
+                if any(x in target.lower() for x in ["consolelogs", "applog", "logs"]):
+                    rejection_reason = f"Command rejected: waitFor target '{target}' contains a debug ledger or log field. WaitFor is for application state slots only."
             
             if rejection_reason:
                 print(f"{YELLOW}[Sanitizer] Rejected command: {rejection_reason}{RESET}")
@@ -777,7 +774,7 @@ CRITICAL RULES - follow these exactly:
                 if trace_step_index < len(steps):
                     step = steps[trace_step_index]
                     # Compare actual post_state values_after with step's expected post_state_snapshot
-                    mismatch = not success
+                    mismatch = False
                     cleaned_after = {}
                     for k_after, val_after in values_after.items():
                         if "." in k_after:
@@ -860,143 +857,155 @@ CRITICAL RULES - follow these exactly:
         while not self.bridge.graph.get_mounted_components() and (time.time() - start_wait) < 3.0:
             await asyncio.sleep(0.1)
 
-        # 1. Compile Goal
-        snapshot = self.bridge.graph.snapshot()
-        try:
-            goal = await self.bridge.llm_adapter.compile_goal(query, snapshot)
-            print(f"{GREEN}Successfully compiled Goal!{RESET}")
-            print(f"  Description: {goal.description}")
-            print(f"  Success Conditions:")
-            for cond in goal.success_conditions:
-                print(f"    - {cond.target} {cond.operator} {cond.value}")
-            if goal.failure_conditions:
-                print(f"  Failure Conditions:")
-                for cond in goal.failure_conditions:
-                    print(f"    - {cond.target} {cond.operator} {cond.value}")
-        except Exception as e:
-            print(f"{RED}Failed to compile goal: {e}{RESET}")
-            return {"status": "failed", "error": str(e)}
+        # Decompose the high-level goal into sequential stages
+        print(f"{CYAN}Decomposing high-level goal into sequential stages...{RESET}")
+        stages = await self._decompose_goal(query)
+        print(f"{GREEN}Decomposed into {len(stages)} stages:{RESET}")
+        for idx, stage in enumerate(stages):
+            print(f"  {idx+1}. {stage}")
 
-        # Ensure goal step limit respects runner limit
-        goal.max_steps = self.max_steps
+        # Initialize global tracking variables across all stages
+        global_action_history = []
+        global_step_count = 0
+        global_llm_calls_made = 0
+        active_trace = None
+        trace_step_index = 0
 
-        # 2. Build initial state
-        initial_val = self._get_values_dict()
-        state: AgentState = {
-            "query": query,
-            "goal": goal,
-            "registry": snapshot,
-            "values": initial_val,
-            "commands": [],
-            "action_history": [],
-            "consecutive_ineffective_count": 0,
-            "step_count": 0,
-            "status": "init",
-            "error": None,
-            "active_trace": None,
-            "trace_step_index": 0,
-            "initial_values": initial_val,
-            "llm_calls_made": 0
-        }
+        # Execute each stage sequentially
+        for idx, stage_query in enumerate(stages):
+            print(f"\n{MAGENTA}===================================================={RESET}")
+            print(f"{MAGENTA}[Stage {idx+1}/{len(stages)}] Starting: {stage_query}{RESET}")
+            print(f"{MAGENTA}===================================================={RESET}")
 
-        # 3. Run the workflow
-        start_exec_time = time.time()
-        result = await self.graph.ainvoke(state, config={"recursion_limit": 100})
-
-        # 4. Check outcome and update status
-        success_met = True
-        for cond in goal.success_conditions:
-            if not cond.evaluate(self.bridge.graph):
-                success_met = False
-                break
-
-        if goal.success_conditions and success_met:
-            print(f"\n{GREEN}[Success] Goal accomplished! Steps taken: {result['step_count']}{RESET}")
-            await self.bridge.set_agent_status("succeeded")
-
-            # Handle Golden Trace recording / update
+            # Get fresh snapshot to compile the goal for this stage
+            snapshot = self.bridge.graph.snapshot()
             try:
-                active_trace = result.get("active_trace")
-                from react_agent_bridge.discovery.traces import GoldenTraceStore
-                store = GoldenTraceStore(self.db_path)
-                
-                if active_trace:
-                    # Successfully replayed trace: promote its confidence
-                    print(f"{GREEN}[Trace Replay] Replayed trace successfully. Promoting confidence...{RESET}")
-                    store.update_trace_confidence(active_trace.trace_id, succeeded=True)
-                else:
-                    # Planned via LLM: record new trace if we actually had valid steps
-                    valid_steps = [h for h in result.get("action_history", []) if not h.get("blocked")]
-                    if valid_steps:
-                        import uuid
-                        from react_agent_bridge.discovery.traces import GoldenTrace, GoldenTraceStep
-                        
-                        steps = []
-                        for h in valid_steps:
-                            cmd = h["command"]
-                            steps.append(GoldenTraceStep(
-                                command_type=cmd["type"],
-                                target=cmd["target"],
-                                value=cmd.get("timeoutMs") if cmd["type"] == "waitFor" else cmd.get("value"),
-                                event=cmd.get("event"),
-                                selector=cmd.get("payload"),
-                                args=cmd.get("args"),
-                                condition=cmd.get("condition"),
-                                pre_state_snapshot=h.get("pre_state", {}),
-                                post_state_snapshot=h.get("post_state", {}),
-                                settle_time_ms=h.get("settle_time_ms", 0.0)
-                            ))
-
-                        import hashlib
-                        mounted = self.bridge.graph.get_mounted_components()
-                        names = sorted([c.display_name for c in mounted])
-                        app_version_hash = hashlib.md5(json.dumps(names).encode("utf-8")).hexdigest()[:16]
-
-                        # Helper to compute structural signature of goal
-                        def compute_goal_signature(goal: Goal) -> str:
-                            sig_parts = []
-                            for cond in goal.success_conditions:
-                                parts = cond.target.rsplit(".", 1)
-                                if len(parts) == 2:
-                                    comp_id, slot_key = parts
-                                    clean_comp = comp_id.split("#", 1)[0]
-                                    sig_parts.append(f"{clean_comp}.{slot_key}:{cond.operator}")
-                            sig_parts.sort()
-                            return ",".join(sig_parts)
-
-                        sig = compute_goal_signature(goal)
-
-                        trace = GoldenTrace(
-                            trace_id=str(uuid.uuid4()),
-                            workflow_name=goal.description,
-                            goal_description=query,
-                            recorded_at=time.time(),
-                            application_version_hash=app_version_hash,
-                            precondition_state=result.get("initial_values", {}),
-                            steps=steps,
-                            postcondition_state=self._get_values_dict(),
-                            execution_time_ms=(time.time() - start_exec_time) * 1000.0,
-                            llm_calls_made=result.get("llm_calls_made", 0),
-                            confidence=1.0,
-                            structural_signature=sig
-                        )
-                        store.record_trace(trace)
-                        print(f"{GREEN}[Trace Replay] Successfully recorded new golden trace (ID: {trace.trace_id}){RESET}")
+                goal = await self.bridge.llm_adapter.compile_goal(stage_query, snapshot)
+                print(f"{GREEN}Successfully compiled sub-goal for stage {idx+1}!{RESET}")
+                print(f"  Description: {goal.description}")
+                print(f"  Success Conditions:")
+                for cond in goal.success_conditions:
+                    print(f"    - {cond.target} {cond.operator} {cond.value}")
             except Exception as e:
-                logger.error(f"Failed to record/update trace: {e}", exc_info=True)
+                print(f"{RED}Failed to compile goal for stage {idx+1}: {e}{RESET}")
+                return {"status": "failed", "error": f"Failed to compile stage {idx+1}: {e}"}
 
-        elif result["step_count"] >= goal.max_steps:
-            print(f"\n{RED}[Failure] Step budget exceeded without satisfying the goal!{RESET}")
-            if "action_history" in result:
-                print("Sequence of failed actions:")
-                for idx, item in enumerate(result["action_history"]):
-                    print(f"  {idx+1}. Command: {json.dumps(item['command'])} | State Changed: {item['state_changed']}")
-            print("\nLast known state values:")
-            for target, val in self._get_values_dict().items():
-                print(f"  {target} = {val}")
-            await self.bridge.set_agent_status("failed")
-        else:
-            print(f"\n{RED}[Failed] Planner loop finished without satisfying conditions. Error: {result.get('error')}{RESET}")
-            await self.bridge.set_agent_status("failed")
+            goal.max_steps = self.max_steps
 
-        return result
+            # Build state for the stage, carrying over historical values
+            live_values = self._get_values_dict()
+            state: AgentState = {
+                "query": stage_query,
+                "goal": goal,
+                "registry": snapshot,
+                "values": live_values,
+                "commands": [],
+                "action_history": global_action_history,
+                "consecutive_ineffective_count": 0,
+                "step_count": global_step_count,
+                "status": "init",
+                "error": None,
+                "active_trace": active_trace,
+                "trace_step_index": trace_step_index,
+                "initial_values": live_values,
+                "llm_calls_made": global_llm_calls_made
+            }
+
+            # Run the workflow for this stage
+            result = await self.graph.ainvoke(state, config={"recursion_limit": 100})
+
+            # Update global tracking variables
+            global_action_history = result.get("action_history", [])
+            global_step_count = result.get("step_count", 0)
+            global_llm_calls_made = result.get("llm_calls_made", 0)
+            active_trace = result.get("active_trace")
+            trace_step_index = result.get("trace_step_index", 0)
+
+            # Verify if this stage's success conditions are satisfied
+            success_met = True
+            for cond in goal.success_conditions:
+                if not cond.evaluate(self.bridge.graph):
+                    success_met = False
+                    break
+
+            if not success_met:
+                print(f"\n{RED}[Failure] Stage {idx+1} failed to satisfy success conditions!{RESET}")
+                if "action_history" in result:
+                    print("Sequence of actions in this stage:")
+                    for action_idx, item in enumerate(result["action_history"]):
+                        print(f"  {action_idx+1}. Command: {json.dumps(item['command'])} | State Changed: {item['state_changed']}")
+                await self.bridge.set_agent_status("failed")
+                return {
+                    "status": "failed",
+                    "error": f"Stage {idx+1} success conditions not met",
+                    "step_count": global_step_count,
+                    "action_history": global_action_history
+                }
+
+            print(f"{GREEN}[Success] Stage {idx+1} accomplished!{RESET}")
+            # Sleep a bit to let any unmounts/mounts settle before starting the next stage
+            await asyncio.sleep(0.5)
+
+        # All stages completed successfully!
+        print(f"\n{GREEN}[Success] All stages completed successfully! Total steps: {global_step_count}{RESET}")
+        await self.bridge.set_agent_status("succeeded")
+
+        # Handle Golden Trace recording
+        try:
+            from react_agent_bridge.discovery.traces import GoldenTraceStore
+            store = GoldenTraceStore(self.db_path)
+            if active_trace:
+                store.update_trace_confidence(active_trace.trace_id, succeeded=True)
+            else:
+                valid_steps = [h for h in global_action_history if not h.get("blocked")]
+                if valid_steps:
+                    import uuid
+                    import hashlib
+                    from react_agent_bridge.discovery.traces import GoldenTrace, GoldenTraceStep
+                    
+                    steps = []
+                    for h in valid_steps:
+                        cmd = h["command"]
+                        steps.append(GoldenTraceStep(
+                            command_type=cmd["type"],
+                            target=cmd["target"],
+                            value=cmd.get("value"),
+                            event=cmd.get("event"),
+                            selector=cmd.get("payload"),
+                            args=cmd.get("args"),
+                            pre_state_snapshot=h.get("pre_state", {}),
+                            post_state_snapshot=h.get("post_state", {}),
+                            settle_time_ms=h.get("settle_time_ms", 0.0)
+                        ))
+                    
+                    mounted = self.bridge.graph.get_mounted_components()
+                    names = sorted([c.display_name for c in mounted])
+                    app_version_hash = hashlib.md5(json.dumps(names).encode("utf-8")).hexdigest()[:16]
+
+                    sig = self._compute_goal_signature(goal)
+                    
+                    full_trace = GoldenTrace(
+                        trace_id=str(uuid.uuid4()),
+                        workflow_name=goal.description,
+                        goal_description=query,
+                        recorded_at=time.time(),
+                        application_version_hash=app_version_hash,
+                        precondition_state=global_action_history[0]["pre_state"] if global_action_history else {},
+                        steps=steps,
+                        postcondition_state=self._get_values_dict(),
+                        execution_time_ms=0.0,
+                        llm_calls_made=global_llm_calls_made,
+                        confidence=1.0,
+                        structural_signature=sig
+                    )
+                    store.record_trace(full_trace)
+                    print(f"{GREEN}[Trace Replay] Successfully recorded new golden trace (ID: {full_trace.trace_id}){RESET}")
+        except Exception as e:
+            logger.error(f"Failed to record/update trace: {e}", exc_info=True)
+
+        return {
+            "status": "executed",
+            "step_count": global_step_count,
+            "action_history": global_action_history,
+            "llm_calls_made": global_llm_calls_made
+        }
