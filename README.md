@@ -55,6 +55,8 @@ graph LR
 
 ## 🚀 Installation & Local Development
 
+Compatible with React 18+, Vite, webpack 5, and Create React App. Next.js support is in active development.
+
 ### Quick Install
 This is the path for developers adopting the library in their own project.
 
@@ -189,6 +191,48 @@ function Dashboard() {
 
 ---
 
+## 🧠 Zustand Integration
+
+Integrate your global Zustand store in just two lines of code by importing the adapter and wrapping your existing `create` call:
+
+```javascript
+// Before
+import { create } from 'zustand';
+const useStore = create((set) => ({ count: 0, increment: () => set((s) => ({ count: s.count + 1 })) }));
+
+// After
+import { create } from 'zustand';
+import { bridgeZustand } from 'react-agent-bridge/zustand';
+const useStore = bridgeZustand(create((set) => ({ count: 0, increment: () => set((s) => ({ count: s.count + 1 })) })), {}, 'MyStore');
+```
+
+This simple wrapper provides the following key benefits to the developer:
+* **Live State Ingestion**: The agent can read all store state values in real time via the component state registry.
+* **Semantic Action Dispatching**: The agent can call store actions by name (e.g. `'increment'`) via `callAction`.
+
+---
+
+## 📦 Redux Integration
+
+Integrate your global Redux Toolkit store in just two lines of code by importing the adapter and wrapping your existing `configureStore` call:
+
+```javascript
+// Before
+import { configureStore } from '@reduxjs/toolkit';
+const store = configureStore({ reducer: { counter: counterReducer } });
+
+// After
+import { configureStore } from '@reduxjs/toolkit';
+import { bridgeRedux } from 'react-agent-bridge/redux';
+const store = bridgeRedux(configureStore({ reducer: { counter: counterReducer } }), {}, 'ReduxStore');
+```
+
+This simple wrapper provides the following key benefits to the developer:
+* **Live Slice Ingestion**: The agent can read all store state slices in real time via the component state registry.
+* **Semantic Dispatching**: The agent can dispatch store actions by name or type string via the wrapped `dispatch` method under `callAction`.
+
+---
+
 ## 🕵️‍♂️ Passive Discovery & Golden Trace Replay
 
 `react-agent-bridge` features a built-in session recording, workflow inference, and instant execution system that enables zero-LLM-cost replays of complex multi-step forms and dashboards.
@@ -229,16 +273,16 @@ When compiling natural language goals or executing plans, the utility determines
 
 ### CLI Commands Reference
 
-| CLI Command | Equivalent Python SDK Call | Purpose / Action |
+| CLI Command | Purpose / Action | Example Use Case |
 |:---|:---|:---|
-| **`setup`** | *N/A (config initialization)* | Launch the interactive menu setup to configure preferred model providers (Ollama, Gemini, OpenAI, Groq, Custom) and store credentials securely in `~/.react-agent-bridge/config.json`. |
-| **`connect`** | `await bridge.wait_for_client()` | Verify WebSocket connection state and print linked app metadata (App Name, active component count, and current route list). |
-| **`registry`** | `bridge.graph.get_mounted_components()` | Dump the active components, slots, types, descriptions, JSDoc tags, and visible interactive DOM selector elements. |
-| **`watch`** | `bridge.add_listener("state_update", ...)` | Connect and listen in real time to state changes (slot, previous value, new value) as human users click and type in the browser. |
-| **`run "<goal>"`** | `await runner.execute(goal)` | Compile the query into structured success/failure conditions and run the LangGraph planner, utilizing LLM actions and Golden Trace Replay. |
-| **`audit`** | `await bridge.query_audit_log()` | Output the append-only command ledger containing all agent state changes and dispatched actions (with automatic sensitive value redaction). |
-| **`logs`** | `await bridge.query_ledger()` | Fetch and output browser console outputs (`console.log`, `console.warn`, `console.error`) and unhandled promise exceptions. |
-| **`discover`** | `session = bridge.discover()` | Start a passive observer server to record human walkthrough actions. Generates the `agent-context.md` file and sequencing rules upon pressing `Ctrl+C`. |
+| **`setup`** | Launch the interactive menu setup to configure preferred model providers (Ollama, Gemini, OpenAI, Groq, Custom) and store credentials securely in `~/.react-agent-bridge/config.json`. | Configure API keys or local LLM settings once before running agents |
+| **`connect`** | Verify WebSocket connection state and print linked app metadata (App Name, active component count, and current route list). | Verify the frontend has linked up and check available routes |
+| **`registry`** | Dump the active components, slots, types, descriptions, JSDoc tags, and visible interactive DOM selector elements. | See all state slots before running your first goal |
+| **`watch`** | Connect and listen in real time to state changes (slot, previous value, new value) as human users click and type in the browser. | Debug why a form field is not updating |
+| **`run "<goal>"`** | Compile the query into structured success/failure conditions and run the LangGraph planner, utilizing LLM actions and Golden Trace Replay. | Run the agent to achieve a goal like adding a new project |
+| **`audit`** | Output the append-only command ledger containing all agent state changes and dispatched actions (with automatic sensitive value redaction). | Verify the agent did not touch sensitive fields |
+| **`logs`** | Fetch and output browser console outputs (`console.log`, `console.warn`, `console.error`) and unhandled promise exceptions. | Check console.error logs when the agent is stuck or fails |
+| **`discover`** | Start a passive observer server to record human walkthrough actions. Generates the `agent-context.md` file and sequencing rules upon pressing `Ctrl+C`. | Record user flows to generate state context files |
 
 ---
 
