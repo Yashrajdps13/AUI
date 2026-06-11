@@ -31,8 +31,8 @@ export const { increment, decrement, incrementByAmount } = counterSlice.actions;
 export const { setName } = userSlice.actions;
 
 const metadata = {
-  counter: { description: 'Simple global click counter slice' },
-  user: { sensitive: false, description: 'User profile details containing developer name' },
+  counter: { description: 'Simple global click counter slice. Dispatched via Redux action string "counter/increment", "counter/decrement", or "counter/incrementByAmount"' },
+  user: { sensitive: false, description: 'User profile details containing developer name. Dispatched via Redux action string "user/setName" with payload' },
 };
 
 export const store = bridgeRedux(
