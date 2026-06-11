@@ -27,6 +27,16 @@ By hooking directly into the React Fiber tree at runtime, it exposes a semantic,
 
 The result is agentic control that is **10x faster, 100x cheaper, and rock-solid resilient**.
 
+## 🏗️ Architecture
+
+```mermaid
+graph LR
+    React["React Application (Browser)<br/>Fiber Scanner & State Registry"] <-->|WebSocket Protocol<br/>(Structured Diffs & Actions)| WS["WebSocket Link"]
+    WS <-->|WebSocket Protocol<br/>(No DOM Interaction)| Agent["Agent Runtime (Python)<br/>Autonomous Goal Planner"]
+```
+
+*The agent operates entirely on structured application state and semantic actions, eliminating direct DOM scraping or visual pixel processing.*
+
 ---
 
 ## 🛠️ Key Capabilities & Features
