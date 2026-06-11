@@ -152,7 +152,7 @@ async def main():
     # -------------------------------------------------------------
     goal_desc = (
         'Log in with password "secretpassword", create a new project called "Synergy Alpha", '
-        'open its task board, add a task "Setup API Gateway" for Alice, and mark it complete.'
+        'and open its task board.'
     )
     await prompt_step("Execute Automated Planning Goal", f'react-agent-bridge run "{goal_desc}"')
     
