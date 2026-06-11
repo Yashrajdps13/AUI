@@ -50,6 +50,7 @@ graph LR
 * **🚫 Safety & State Integrity Guarantees**: Restrict write access on sensitive variables, prevent direct mutations of computed/read-only slots, and block interactions with hidden or disabled elements.
 * **🚨 Real-Time Error Interception**: Automatically stream runtime errors, promise rejections, and browser console warnings directly to the agent to debug failures instantly.
 * **🎨 Agent-Aware Styling**: Use a native React hook or automatic body styling to change the app UI dynamically when an agent is active, giving users clear visual indicators of agent activity.
+* **🌐 Live Browser Context**: Automatic URL, route, and query parameter visibility in the agent registry, plus a `registerContext` API for surfacing `localStorage`, feature flags, or any environmental value as a read-only context slot.
 
 ---
 
@@ -287,6 +288,41 @@ This simple wrapper provides the following key benefits to the developer:
 
 ---
 
+## 🌐 Browser Context
+
+`react-agent-bridge` automatically maintains a live `BrowserContext` entry in the registry with no configuration required. It tracks the current URL and updates on every client-side navigation:
+
+```javascript
+// Available automatically in react-agent-bridge registry under __context__#env
+{
+  pathname: '/dashboard',
+  href: 'http://localhost:3000/dashboard?tab=stats',
+  search: '?tab=stats',
+  queryParams: { tab: 'stats' },
+  hash: ''
+}
+```
+
+For custom environmental state — `localStorage` values, feature flags, A/B test buckets, or auth tokens — use `registerContext` to surface any getter function as a polled, read-only slot in the agent's `AppContext`:
+
+```javascript
+import { registerContext } from 'react-agent-bridge';
+
+// Poll localStorage every 2 seconds and expose it to the agent
+registerContext('featureFlags', () => JSON.parse(localStorage.getItem('flags') ?? '{}'), {
+  pollIntervalMs: 2000,
+});
+
+// Mark sensitive values so they are redacted in agent logs
+registerContext('authToken', () => localStorage.getItem('auth_token'), {
+  sensitive: true,
+});
+```
+
+All custom context slots appear under `AppContext` in `react-agent-bridge registry` and are read-only — agents can observe them but cannot write back.
+
+---
+
 ## 🕵️‍♂️ Passive Discovery & Golden Trace Replay
 
 `react-agent-bridge` features a built-in session recording, workflow inference, and instant execution system that enables zero-LLM-cost replays of complex multi-step forms and dashboards.
@@ -350,7 +386,7 @@ The AUI repository includes a comprehensive set of test apps and guided agent fl
 | **[discovery-flow](examples/discovery-flow)** | Multi-step ticket registration flow demonstrating SQLite session logging, outcome step clustering, sequencing constraint inference, and Golden Trace replay. | `cd examples/discovery-flow` <br> `npm run dev` | `cd examples/discovery-flow` <br> `python agent.py` |
 | **[zustand-flow](examples/zustand-flow)** | Bridges Zustand global store, demonstrates component-less bindings and direct array mutation validation. | `cd examples/zustand-flow/frontend` <br> `npm run dev` | `cd examples/zustand-flow/agent` <br> `python agent.py` |
 | **[redux-flow](examples/redux-flow)** | Bridges Redux Toolkit global store slices, enforces read-only state rules, wraps dispatches to plain objects, and injects slice metadata for LLM planning guidance. | `cd examples/redux-flow` <br> `npm run dev` | *Explore using the CLI utility* (e.g. `react-agent-bridge registry`) |
-| **[nextjs-flow](examples/nextjs-flow)** | Next.js 14 App Router integration. Shows `'use client'` component instrumentation, `providers.tsx` connection pattern, Server Component isolation, fiber alternate + `document.querySelector` DOM fallbacks, and `@writeable user` safety rule enforcement across page navigations. | `cd examples/nextjs-flow` <br> `npm install` <br> `npm run dev` | `cd examples/nextjs-flow` <br> `python agent.py` |
+| **[nextjs-flow](examples/nextjs-flow)** | Next.js 14 App Router integration. Shows `'use client'` component instrumentation, `providers.tsx` connection pattern, Server Component isolation, fiber alternate + `document.querySelector` DOM fallbacks, and `@writeable user` safety rule enforcement across page navigations. | `cd examples/nextjs-flow` <br> `npm install` <br> `npm run dev` | *Explore using the CLI utility* (e.g. `react-agent-bridge registry`) |
 | **[wait-for-flow](examples/wait-for-flow)** | Focuses on asynchronous mounting and state settlement delay verification. | `cd examples/wait-for-flow` <br> `npm run dev` | *Explore using the CLI utility* (e.g. `react-agent-bridge run`) |
 | **[security-flow](examples/security-flow)** | Focuses on sensitive password field masking and read-only slot protection tests. | `cd examples/security-flow` <br> `npm run dev` | *Explore using the CLI utility* (e.g. `react-agent-bridge registry`) |
 | **[routing-flow](examples/routing-flow)** | Verifies page route transitions and virtual slot condition checking. | `cd examples/routing-flow` <br> `npm run dev` | *Explore using the CLI utility* |
