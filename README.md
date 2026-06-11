@@ -55,7 +55,7 @@ graph LR
 
 ## 🚀 Installation & Local Development
 
-Compatible with React 18+, Vite, webpack 5, and Create React App. Next.js App Router support coming soon.
+Compatible with React 18+, Vite, webpack 5, Create React App, and **Next.js 14+ App Router** (fully supported).
 
 Clone this repository to get started.
 
@@ -185,6 +185,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 ```
 
 Any component in your app that needs agent visibility only needs `'use client'` at the top and a standard `useState` call — the Babel plugin handles the rest automatically.
+
+### 3. How It Works Under the Hood (Next.js App Router)
+
+Next.js 14 App Router introduces React Server Components (RSC) and Concurrent Mode rendering that can decouple a component's Fiber node from its host `HTMLElement`. `react-agent-bridge` handles this transparently with two layers of resilience:
+
+- **Fiber Alternate Fallback**: The Fiber scanner checks both the primary and `alternate` (work-in-progress) fiber trees when resolving a component's DOM node — required for React's Concurrent Mode where commits swap between the two.
+- **Document-Level Selector Fallback**: When fiber-based DOM resolution still fails due to RSC boundaries, `dispatchEvent` automatically falls back to `document.querySelector(selector)` and interacts with the element directly. A warning is logged so developers can see when this path is taken.
+
+The result is that agents can reliably click links, buttons, and inputs inside Next.js App Router pages without any additional configuration.
 
 ---
 
@@ -341,7 +350,7 @@ The AUI repository includes a comprehensive set of test apps and guided agent fl
 | **[discovery-flow](examples/discovery-flow)** | Multi-step ticket registration flow demonstrating SQLite session logging, outcome step clustering, sequencing constraint inference, and Golden Trace replay. | `cd examples/discovery-flow` <br> `npm run dev` | `cd examples/discovery-flow` <br> `python agent.py` |
 | **[zustand-flow](examples/zustand-flow)** | Bridges Zustand global store, demonstrates component-less bindings and direct array mutation validation. | `cd examples/zustand-flow/frontend` <br> `npm run dev` | `cd examples/zustand-flow/agent` <br> `python agent.py` |
 | **[redux-flow](examples/redux-flow)** | Bridges Redux Toolkit global store slices, enforces read-only state rules, wraps dispatches to plain objects, and injects slice metadata for LLM planning guidance. | `cd examples/redux-flow` <br> `npm run dev` | *Explore using the CLI utility* (e.g. `react-agent-bridge registry`) |
-| **[nextjs-flow](examples/nextjs-flow)** | Next.js 14 App Router integration. Shows `'use client'` component instrumentation, `providers.tsx` connection pattern, and Server Component isolation (Server Components are never instrumented). | `cd examples/nextjs-flow` <br> `npm run dev` | *Explore using the CLI utility* (e.g. `react-agent-bridge registry`) |
+| **[nextjs-flow](examples/nextjs-flow)** | Next.js 14 App Router integration. Shows `'use client'` component instrumentation, `providers.tsx` connection pattern, Server Component isolation, fiber alternate + `document.querySelector` DOM fallbacks, and `@writeable user` safety rule enforcement across page navigations. | `cd examples/nextjs-flow` <br> `npm install` <br> `npm run dev` | `cd examples/nextjs-flow` <br> `python agent.py` |
 | **[wait-for-flow](examples/wait-for-flow)** | Focuses on asynchronous mounting and state settlement delay verification. | `cd examples/wait-for-flow` <br> `npm run dev` | *Explore using the CLI utility* (e.g. `react-agent-bridge run`) |
 | **[security-flow](examples/security-flow)** | Focuses on sensitive password field masking and read-only slot protection tests. | `cd examples/security-flow` <br> `npm run dev` | *Explore using the CLI utility* (e.g. `react-agent-bridge registry`) |
 | **[routing-flow](examples/routing-flow)** | Verifies page route transitions and virtual slot condition checking. | `cd examples/routing-flow` <br> `npm run dev` | *Explore using the CLI utility* |
