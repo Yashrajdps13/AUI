@@ -23,3 +23,8 @@ Thumbs.db
 **/docs/
 .cursorrules
 **/.venv
+
+# Local scratch and database files
+scratch/
+**/scratch/
+*.db
