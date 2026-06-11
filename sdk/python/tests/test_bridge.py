@@ -821,4 +821,38 @@ async def test_compile_goal_target_validation():
         assert goal.success_conditions[0].target == "ProjectDetailView.isMounted"
 
 
+def test_agent_runner_business_context_loading_and_parsing(tmp_path):
+    from react_agent_bridge import ReactAgentBridge, AgentRunner
+
+    context_file = tmp_path / "mock-context.md"
+    context_file.write_text("""
+## Component Glossary
+### DashboardView
+A dashboard view component.
+routes matching `/dashboard`
+
+## Workflow Definitions
+### RegisterFlow
+preconditions:
+- AuthStore.isAuthenticated equals true
+steps:
+1. Click register
+2. Enter details
+success condition: AuthStore.isRegistered equals true
+""", encoding="utf-8")
+
+    bridge = ReactAgentBridge(host="localhost", port=8000)
+    runner = AgentRunner(bridge, business_context=str(context_file))
+
+    assert "GLOSSARY:" in runner.business_context
+    assert "- DashboardView (Routes: /dashboard): A dashboard view component." in runner.business_context
+    assert "WORKFLOWS:" in runner.business_context
+    assert "- Workflow: RegisterFlow" in runner.business_context
+    assert "Preconditions: AuthStore.isAuthenticated equals True" in runner.business_context
+    assert "Steps:" in runner.business_context
+    assert "* Click register" in runner.business_context
+    assert "Success Condition: AuthStore.isRegistered equals True" in runner.business_context
+
+
+
 

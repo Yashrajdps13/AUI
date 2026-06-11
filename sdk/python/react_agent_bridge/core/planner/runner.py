@@ -83,7 +83,68 @@ class AgentRunner:
     ):
         self.bridge = bridge
         self.model = model
+        
+        # Load business context from file if it is a file path
         self.business_context = business_context
+        if isinstance(business_context, str):
+            is_file_path = False
+            if business_context.endswith(".md") or business_context.endswith(".txt"):
+                try:
+                    if os.path.exists(business_context):
+                        is_file_path = True
+                except Exception:
+                    pass
+            
+            if is_file_path:
+                try:
+                    with open(business_context, "r", encoding="utf-8") as f:
+                        self.business_context = f.read()
+                except Exception as e:
+                    logger.warning(f"Failed to read business context file: {e}. Keeping raw path.")
+            
+            # Attempt to parse business context into structured glossary entries and workflows
+            try:
+                from react_agent_bridge.business_logic.parser import BusinessLogicParser
+                doc = BusinessLogicParser.parse(self.business_context)
+                
+                # Build structured output
+                structured_lines = []
+                if doc.glossary:
+                    structured_lines.append("GLOSSARY:")
+                    for entry in doc.glossary.values():
+                        routes_str = f" (Routes: {', '.join(entry.routes)})" if entry.routes else ""
+                        structured_lines.append(f"- {entry.component_name}{routes_str}: {entry.description}")
+                if doc.workflows:
+                    if structured_lines:
+                        structured_lines.append("")
+                    structured_lines.append("WORKFLOWS:")
+                    for wf in doc.workflows.values():
+                        structured_lines.append(f"- Workflow: {wf.name}")
+                        if wf.preconditions:
+                            pre_conds = ", ".join(
+                                f"{c.target} {c.operator} {c.value}" if c.value is not None else f"{c.target} {c.operator}"
+                                for c in wf.preconditions
+                            )
+                            structured_lines.append(f"  Preconditions: {pre_conds}")
+                        if wf.steps:
+                            structured_lines.append("  Steps:")
+                            for step in wf.steps:
+                                structured_lines.append(f"    * {step}")
+                        if wf.success_condition:
+                            sc = wf.success_condition
+                            sc_val = f" {sc.value}" if sc.value is not None else ""
+                            structured_lines.append(f"  Success Condition: {sc.target} {sc.operator}{sc_val}")
+                        if wf.failure_condition:
+                            fc = wf.failure_condition
+                            fc_val = f" {fc.value}" if fc.value is not None else ""
+                            structured_lines.append(f"  Failure Condition: {fc.target} {fc.operator}{fc_val}")
+                
+                if structured_lines:
+                    self.business_context = "\n".join(structured_lines)
+            except Exception:
+                # Fall back to raw content
+                pass
+
         self.max_steps = max_steps
         self.planner_fn = planner_fn
         self.consecutive_ineffective_limit = 2
