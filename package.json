@@ -22,6 +22,10 @@
     "./redux": {
       "import": "./dist/redux.js",
       "types": "./dist/redux.d.ts"
+    },
+    "./zustand": {
+      "import": "./dist/zustand.js",
+      "types": "./dist/zustand.d.ts"
     }
   },
   "scripts": {
