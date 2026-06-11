@@ -21,6 +21,7 @@ import asyncio
 import sys
 
 from react_agent_bridge.core.client import ReactAgentBridge
+from react_agent_bridge.core.planner.runner import AgentRunner
 
 # Color formatting for terminal outputs
 GREEN = "\033[1;32m"
@@ -134,23 +135,27 @@ async def main():
     input()
 
     # -------------------------------------------------------------
-    # STEP 4: Direct Action Dispatching (Bypassing LLM Runner)
+    # STEP 4: Run Goal (Goal-Directed Planner)
     # CLI Equivalent: react-agent-bridge run "increment the counter three times"
     # -------------------------------------------------------------
-    await prompt_step(
-        "Execute Direct Action Dispatches (Call Redux Dispatch via SDK)", 
-        'react-agent-bridge run "increment the counter three times"'
+    goal_desc = "increment the counter three times"
+    await prompt_step("Execute Automated Planning Goal", f'react-agent-bridge run "{goal_desc}"')
+    
+    # Resolve LLM model following the 4-level resolution priority
+    from react_agent_bridge.cli import resolve_and_check_llm
+    
+    model = resolve_and_check_llm()
+    print(f"\nInitialising AgentRunner using model '{model}'...")
+    
+    runner = AgentRunner(
+        bridge=bridge,
+        model=model,
+        max_steps=10
     )
     
-    print(f"\n{CYAN}Dispatching counter/increment action 3 times directly via the bridge...{RESET}")
-    for i in range(3):
-        print(f"  Dispatching action {i+1}/3...")
-        try:
-            # Invokes storeName#redux.dispatch('counter/increment')
-            await bridge.call_action("ReduxStore#redux.dispatch", ["counter/increment"])
-        except Exception as e:
-            print(f"  {YELLOW}Action dispatch failed: {e}{RESET}")
-        await asyncio.sleep(0.5)
+    print(f"{CYAN}Running goal against Redux frontend application...{RESET}")
+    res = await runner.execute(goal_desc)
+    print(f"Goal status: {res.get('status')}")
 
     # Clean up listener and bridge connection before exiting
     bridge.remove_listener("state_update", state_changed)
