@@ -854,5 +854,35 @@ success condition: AuthStore.isRegistered equals true
     assert "Success Condition: AuthStore.isRegistered equals True" in runner.business_context
 
 
+def test_agent_runner_custom_llm_adapter():
+    from react_agent_bridge import ReactAgentBridge, AgentRunner
+    from react_agent_bridge.core.llm import BaseLLMAdapter
+
+    class DummyAdapter(BaseLLMAdapter):
+        async def call(self, prompt, tools, goal):
+            pass
+        async def compile_goal(self, query, registry_snapshot, original_query=None):
+            pass
+
+    bridge = ReactAgentBridge(host="localhost", port=8000)
+    
+    # Case 1: Custom adapter already set on bridge before AgentRunner init
+    custom_inst = DummyAdapter()
+    bridge.llm_adapter = custom_inst
+    runner1 = AgentRunner(bridge, model="ollama/some-other-model")
+    assert bridge.llm_adapter is custom_inst
+
+    # Case 2: Custom adapter instance passed via llm_adapter parameter
+    bridge2 = ReactAgentBridge(host="localhost", port=8000)
+    runner2 = AgentRunner(bridge2, llm_adapter=custom_inst)
+    assert bridge2.llm_adapter is custom_inst
+
+    # Case 3: Custom adapter class passed via llm_adapter parameter
+    bridge3 = ReactAgentBridge(host="localhost", port=8000)
+    runner3 = AgentRunner(bridge3, llm_adapter=DummyAdapter)
+    assert isinstance(bridge3.llm_adapter, DummyAdapter)
+
+
+
 
 

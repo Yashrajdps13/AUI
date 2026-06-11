@@ -79,7 +79,8 @@ class AgentRunner:
         business_context: Optional[str] = None,
         max_steps: int = 20,
         planner_fn: Optional[Callable[[AgentState], Any]] = None,
-        db_path: str = "discovery.db"
+        db_path: str = "discovery.db",
+        llm_adapter: Optional[Any] = None
     ):
         self.bridge = bridge
         self.model = model
@@ -151,8 +152,13 @@ class AgentRunner:
         self.db_path = db_path
 
         # Override/ensure the bridge uses our designated model for goal intake
-        from react_agent_bridge.core.llm import LiteLLMAdapter
-        if not getattr(self.bridge, "llm_adapter", None) or getattr(self.bridge.llm_adapter, "model", None) != model:
+        if llm_adapter is not None:
+            if isinstance(llm_adapter, type):
+                self.bridge.llm_adapter = llm_adapter()
+            else:
+                self.bridge.llm_adapter = llm_adapter
+        elif not getattr(self.bridge, "llm_adapter", None):
+            from react_agent_bridge.core.llm import LiteLLMAdapter
             self.bridge.llm_adapter = LiteLLMAdapter(model=model)
 
         # Suppress verbose LiteLLM and HTTPX logging
