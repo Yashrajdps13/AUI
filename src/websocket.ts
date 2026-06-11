@@ -563,6 +563,8 @@ class AgentWebSocketManagerImpl {
         let componentId = storeName;
         if (!componentId.startsWith('ZustandStore#') && registry.has(`ZustandStore#${componentId}`)) {
           componentId = `ZustandStore#${componentId}`;
+        } else if (!componentId.endsWith('#redux') && registry.has(`${componentId}#redux`)) {
+          componentId = `${componentId}#redux`;
         }
         const entry = registry.get(componentId);
         
@@ -618,7 +620,13 @@ class AgentWebSocketManagerImpl {
 
       if (this.writeScope.allowedActions) {
         const matchesAction = this.writeScope.allowedActions.some((allowed) => {
-          return allowed === target || allowed === `ZustandStore#${target}` || `ZustandStore#${allowed}` === target;
+          return (
+            allowed === target ||
+            allowed === `ZustandStore#${target}` ||
+            `ZustandStore#${allowed}` === target ||
+            allowed === `${target}#redux` ||
+            `${allowed}#redux` === target
+          );
         });
         if (!matchesAction) {
           return {
@@ -634,7 +642,9 @@ class AgentWebSocketManagerImpl {
           return (
             allowed === componentId ||
             allowed === `ZustandStore#${componentId}` ||
-            `ZustandStore#${allowed}` === componentId
+            `ZustandStore#${allowed}` === componentId ||
+            allowed === `${componentId}#redux` ||
+            `${allowed}#redux` === componentId
           );
         });
         if (!matchesTarget) {
@@ -663,7 +673,9 @@ class AgentWebSocketManagerImpl {
             allowed === componentId ||
             (displayName && allowed === displayName) ||
             allowed === `ZustandStore#${componentId}` ||
-            `ZustandStore#${allowed}` === componentId
+            `ZustandStore#${allowed}` === componentId ||
+            allowed === `${componentId}#redux` ||
+            `${allowed}#redux` === componentId
           );
         });
 
@@ -1284,6 +1296,8 @@ class AgentWebSocketManagerImpl {
         let componentId = rawStoreName;
         if (!componentId.startsWith('ZustandStore#') && registry.has(`ZustandStore#${componentId}`)) {
           componentId = `ZustandStore#${componentId}`;
+        } else if (!componentId.endsWith('#redux') && registry.has(`${componentId}#redux`)) {
+          componentId = `${componentId}#redux`;
         }
 
         const entry = registry.get(componentId);

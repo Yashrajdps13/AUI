@@ -575,7 +575,33 @@ CRITICAL RULES - follow these exactly:
                                 content_extracted = content[start:end+1].strip()
                             else:
                                 content_extracted = content
-                    commands = json.loads(content_extracted)
+                    try:
+                        commands = json.loads(content_extracted)
+                    except Exception:
+                        # Fallback: manually parse stringified objects in a quoted list, e.g. ["{"key":"val"}", "{\"key\":\"val\"}"]
+                        try:
+                            inner = content_extracted.strip()
+                            if inner.startswith('[') and inner.endswith(']'):
+                                inner = inner[1:-1].strip()
+                            items = []
+                            raw_items = re.findall(r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'', inner)
+                            for item in raw_items:
+                                item_clean = item[1:-1].strip()
+                                item_clean = item_clean.replace('\\"', '"').replace("\\'", "'")
+                                try:
+                                    loaded = json.loads(item_clean)
+                                    if isinstance(loaded, dict):
+                                        items.append(loaded)
+                                    elif isinstance(loaded, list):
+                                        items.extend(loaded)
+                                except Exception:
+                                    pass
+                            if items:
+                                commands = items
+                            else:
+                                raise
+                        except Exception:
+                            commands = json.loads(content_extracted)
 
             if not isinstance(commands, list):
                 commands = [commands]
