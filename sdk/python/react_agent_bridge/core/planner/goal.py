@@ -70,7 +70,7 @@ class GoalCondition:
             elif self.operator == "falsy":
                 return not bool(val)
             elif self.operator == "changed":
-                return val is not None
+                return val is not None and val != getattr(comp, "route_at_mount", None)
             return False
 
         if comp is None:
@@ -118,7 +118,16 @@ class GoalCondition:
         elif self.operator == "falsy":
             return not bool(val)
         elif self.operator == "changed":
-            return val is not None
+            if not hasattr(slot_obj, "value_history") or not slot_obj.value_history:
+                return False
+            initial_base_val = slot_obj.value_history[0]
+            if nested_segments:
+                success, initial_val = self._resolve_nested_value(initial_base_val, nested_segments)
+                if not success:
+                    return False
+            else:
+                initial_val = initial_base_val
+            return val != initial_val
         return False
 
     def _resolve_nested_value(self, val: Any, path_segments: List[str]) -> tuple:
