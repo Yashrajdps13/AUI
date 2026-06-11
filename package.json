@@ -17,6 +17,10 @@
     "./babel-plugin": {
       "import": "./dist/babel-plugin.js",
       "types": "./dist/babel-plugin.d.ts"
+    },
+    "./redux": {
+      "import": "./dist/redux.js",
+      "types": "./dist/redux.d.ts"
     }
   },
   "scripts": {
