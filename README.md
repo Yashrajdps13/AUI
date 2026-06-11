@@ -64,13 +64,11 @@ This is the path for developers adopting the library in their own project.
 # Install via local path (not yet published on npm)
 npm install /path/to/react-agent-bridge
 ```
-`import 'react-agent-bridge/preflight'; import { AgentWebSocketManager } from 'react-agent-bridge'; AgentWebSocketManager.connect('ws://localhost:8000');`
 
 ```bash
 # Install via local path (not yet published on pip)
 pip install /path/to/react-agent-bridge/sdk/python
 ```
-`from react_agent_bridge.core.client import ReactAgentBridge; bridge = ReactAgentBridge(); await bridge.start()`
 
 ### Local Development
 This is the path for developers working from the repository source.
