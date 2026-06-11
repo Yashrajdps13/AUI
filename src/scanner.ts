@@ -51,18 +51,33 @@ export function extractInstanceId(fiber: any): string | null {
 
 /**
  * Depth-first search to find the first descendant Host HTML Element.
+ * Searches through the primary fiber tree and falls back to the alternate
+ * fiber tree (work-in-progress) when needed — required for Next.js App Router
+ * where Concurrent Mode may commit from the alternate tree.
  */
-export function findDomNode(fiber: any): HTMLElement | null {
-  if (!fiber) return null;
-  if (fiber.stateNode instanceof HTMLElement) {
-    return fiber.stateNode;
+export function findDomNode(fiber: any, depth = 0): HTMLElement | null {
+  if (!fiber || depth > 100) return null;
+
+  // Direct host component stateNode check
+  if (fiber.stateNode && typeof fiber.stateNode === 'object' && fiber.stateNode.nodeType === 1) {
+    return fiber.stateNode as HTMLElement;
   }
+
+  // DFS through child fibers
   let child = fiber.child;
   while (child) {
-    const dom = findDomNode(child);
+    const dom = findDomNode(child, depth + 1);
     if (dom) return dom;
     child = child.sibling;
   }
+
+  // Fallback: try the alternate fiber tree (Next.js App Router / Concurrent Mode)
+  // Only try alternate at depth=0 to avoid infinite recursion
+  if (depth === 0 && fiber.alternate && fiber.alternate !== fiber) {
+    const altDom = findDomNode(fiber.alternate, 1);
+    if (altDom) return altDom;
+  }
+
   return null;
 }
 
@@ -87,6 +102,7 @@ export function scanFiberTree(rootFiber: any, route: string | null): void {
 
         if (entry) {
           const domRef = findDomNode(fiber);
+          console.log(`[AUI SCAN] Component matched: ${tempId}, domRef:`, domRef ? domRef.tagName : 'null');
           // Enrich the component entry in the store
           BridgeStore.updateFiberAndDomRef(tempId, fiber, domRef, route);
         }

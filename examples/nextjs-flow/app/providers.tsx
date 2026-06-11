@@ -1,20 +1,24 @@
 'use client';
 
 import { useEffect } from 'react';
-import { AgentWebSocketManager } from 'react-agent-bridge';
+import { AgentWebSocketManager, registerContext } from 'react-agent-bridge';
 
-/**
- * Providers wraps the app and establishes the agent WebSocket connection.
- *
- * This component MUST be a Client Component ('use client') because
- * AgentWebSocketManager.connect() uses the browser WebSocket API.
- * It is safe to import AgentWebSocketManager in Server Components — the
- * connect() call is a no-op on the server (guarded by typeof window).
- */
+// Register custom AppContext slots
+if (typeof window !== 'undefined') {
+  registerContext('activeTab', () => {
+    return window.location.pathname.substring(1) || 'home';
+  });
+  registerContext('userTimezone', () => {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  });
+  registerContext('featureFlag', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (window as any).__featureFlags?.newDashboard ?? false;
+  });
+}
+
 export function Providers({ children }: { children: React.ReactNode }) {
   useEffect(() => {
-    // Connect to the local agent backend.
-    // Change the URL to match your agent server address.
     AgentWebSocketManager.connect('ws://localhost:8000');
 
     return () => {
@@ -22,5 +26,6 @@ export function Providers({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  return <>{children}</>;
+  return <div id="app-root">{children}</div>;
 }
+

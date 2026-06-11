@@ -22,6 +22,33 @@ MAGENTA = "\033[1;35m"
 RESET = "\033[0m"
 
 
+def extract_json_objects(text: str) -> List[dict]:
+    results = []
+    brace_count = 0
+    start_idx = -1
+    for i, char in enumerate(text):
+        if char == '{':
+            if brace_count == 0:
+                start_idx = i
+            brace_count += 1
+        elif char == '}':
+            brace_count -= 1
+            if brace_count == 0 and start_idx != -1:
+                obj_str = text[start_idx:i+1]
+                try:
+                    obj = json.loads(obj_str)
+                    results.append(obj)
+                except Exception:
+                    # Try to repair common typos like extra quotes before closing braces
+                    repaired_str = re.sub(r'(\d+)"\s*\}', r'\1}', obj_str)
+                    try:
+                        obj = json.loads(repaired_str)
+                        results.append(obj)
+                    except Exception:
+                        pass
+    return results
+
+
 class AgentState(TypedDict):
     query: str
     goal: Goal
@@ -483,17 +510,19 @@ ALLOWED dispatchEvent selectors per component (ONLY use these exact selector str
 
 CRITICAL RULES - follow these exactly:
 1. Every target in every command (setState target, callAction target, dispatchEvent target and payload selector) MUST exactly match something currently visible in the COMPONENT REGISTRY or the ALLOWED lists above.
-2. DO NOT invent, guess, or reference any component IDs, slot names, action names, or selectors based on what you think should exist (e.g. from the goal description). If they are not in the registry snapshot, they do not exist.
-3. If a component, slot, action, or selector that you need is not in the registry snapshot yet, DO NOT guess it. Instead, you MUST use the `waitFor` command to wait for the target to appear, or stop.
-4. For dispatchEvent: "target" = ComponentID (e.g. "App#r9"), "payload" = css selector (e.g. "#btn-details-next"). NEVER swap these.
-5. Plan commands for the CURRENT page/step only. After clicking a page navigation button (Next/Submit/Pay), stop — the planner re-runs for the next page.
-6. If a slot already has the correct value, skip its setState command.
-7. NEVER call setState on array/list slots (e.g. selectedSessions). Click the corresponding toggle button instead.
-8. Toggle buttons (e.g. session checkboxes) are ON/OFF — clicking again will REMOVE the item. If the condition is already satisfied, do NOT click that button again.
-9. Respond ONLY with a valid JSON array. No markdown fences, no extra text.
-10. Do NOT perform setState on state slots whose corresponding input/interactive elements are not currently visible in the COMPONENT REGISTRY. For example, if a form field input (such as cardNumber or selectedSessions) is not rendered on the current screen, do not set its state slot value until you navigate to the screen where it is rendered.
-11. If the required component is not mounted yet, wait for it to appear. Never plan actions on unmounted components.
-12. Do NOT invoke store actions (such as 'ZustandStore#AuthStore.loginAction') directly via callAction if they require credentials or inputs that are not already described as taking zero arguments or are not provided in the parameters. Instead, when input fields and submit/login buttons are visible in the component registry, you MUST interact with those UI form fields using setState and click the submit button using dispatchEvent. Ensure you always use the submit/click buttons to trigger form submissions rather than direct store/action invocation. """
+2. YOU MUST READ AND ANALYZE the COMPONENT REGISTRY and CURRENT STATE VALUES before choosing any command. Only perform actions on components, slots, and interactive selectors that are currently visible/registered. Do not assume or guess any targets.
+3. DO NOT invent, guess, or reference any component IDs, slot names, action names, or selectors based on what you think should exist (e.g. from the goal description). If they are not in the registry snapshot, they do not exist.
+4. If a component, slot, action, or selector that you need is not in the registry snapshot yet, DO NOT guess it. Instead, you MUST use the `waitFor` command to wait for the target to appear, or stop.
+5. For dispatchEvent: "target" = ComponentID (e.g. "App#r9"), "payload" = css selector (e.g. "#btn-details-next"). NEVER swap these.
+6. Plan commands for the CURRENT page/step only. After clicking a page navigation button (Next/Submit/Pay), stop — the planner re-runs for the next page.
+7. If a slot already has the correct value, skip its setState command.
+8. NEVER call setState on array/list slots (e.g. selectedSessions). Click the corresponding toggle button instead.
+9. Toggle buttons (e.g. session checkboxes) are ON/OFF — clicking again will REMOVE the item. If the condition is already satisfied, do NOT click that button again.
+10. Respond ONLY with a valid JSON array of command objects, for example: [{{"type": "dispatchEvent", "target": "Providers", "event": "click", "payload": "#link-counter"}}]. Do NOT wrap the objects as strings inside the array. Do NOT output any markdown code blocks or extra text.
+11. Do NOT perform setState on state slots whose corresponding input/interactive elements are not currently visible in the COMPONENT REGISTRY. For example, if a form field input (such as cardNumber or selectedSessions) is not rendered on the current screen, do not set its state slot value until you navigate to the screen where it is rendered.
+12. If the required component is not mounted yet, wait for it to appear. Never plan actions on unmounted components.
+13. Do NOT invoke store actions (such as 'ZustandStore#AuthStore.loginAction') directly via callAction if they require credentials or inputs that are not already described as taking zero arguments or are not provided in the parameters. Instead, when input fields and submit/login buttons are visible in the component registry, you MUST interact with those UI form fields using setState and click the submit button using dispatchEvent. Ensure you always use the submit/click submissions rather than direct store/action invocation.
+14. Targets starting with '__context__#' are read-only environmental contexts (like browser URL / location) and CANNOT be mutated via setState, callAction, or dispatchEvent. To change pages/routes, you MUST click on navigation links (e.g. '#link-counter') using dispatchEvent click rather than trying to write to '__context__#env.pathname' directly. """
         if self.business_context:
             system_prompt += f"\n\nBUSINESS CONTEXT & CRITICAL RULES:\n{self.business_context}"
 
@@ -545,63 +574,66 @@ CRITICAL RULES - follow these exactly:
             try:
                 commands = json.loads(content)
             except Exception:
-                # Try JSON repair / extraction if first parse fails
-                content_stripped = content.strip()
-                # If wrapped as string array, e.g. ["{...}"] or [ "{...}" ] or ['{...}']
-                if (re.match(r'^\[\s*"\s*\{', content_stripped) and re.search(r'\}\s*"\s*\]$', content_stripped)) or \
-                   (re.match(r"^\[\s*'\s*\{", content_stripped) and re.search(r"\}\s*'\s*\]$", content_stripped)):
-                    first_curly = content_stripped.find('{')
-                    last_curly = content_stripped.rfind('}')
-                    if first_curly != -1 and last_curly != -1 and last_curly > first_curly:
-                        repaired = '[' + content_stripped[first_curly:last_curly+1] + ']'
-                        try:
-                            commands = json.loads(repaired)
-                        except Exception:
-                            pass
-                
-                # If still not parsed, try generic markdown block extraction
-                if commands is None:
-                    match_json = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL)
-                    if match_json:
-                        content_extracted = match_json.group(1).strip()
-                    else:
-                        match_block = re.search(r"```\s*(.*?)\s*```", content, re.DOTALL)
-                        if match_block:
-                            content_extracted = match_block.group(1).strip()
+                # Try generic extraction of JSON objects from the text first
+                commands = extract_json_objects(content)
+                if not commands:
+                    # Try JSON repair / extraction if first parse fails
+                    content_stripped = content.strip()
+                    # If wrapped as string array, e.g. ["{...}"] or [ "{...}" ] or ['{...}']
+                    if (re.match(r'^\[\s*"\s*\{', content_stripped) and re.search(r'\}\s*"\s*\]$', content_stripped)) or \
+                       (re.match(r"^\[\s*'\s*\{", content_stripped) and re.search(r"\}\s*'\s*\]$", content_stripped)):
+                        first_curly = content_stripped.find('{')
+                        last_curly = content_stripped.rfind('}')
+                        if first_curly != -1 and last_curly != -1 and last_curly > first_curly:
+                            repaired = '[' + content_stripped[first_curly:last_curly+1] + ']'
+                            try:
+                                commands = json.loads(repaired)
+                            except Exception:
+                                pass
+                    
+                    # If still not parsed, try generic markdown block extraction
+                    if commands is None:
+                        match_json = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL)
+                        if match_json:
+                            content_extracted = match_json.group(1).strip()
                         else:
-                            start = content.find("[")
-                            end = content.rfind("]")
-                            if start != -1 and end != -1 and end > start:
-                                content_extracted = content[start:end+1].strip()
+                            match_block = re.search(r"```\s*(.*?)\s*```", content, re.DOTALL)
+                            if match_block:
+                                content_extracted = match_block.group(1).strip()
                             else:
-                                content_extracted = content
-                    try:
-                        commands = json.loads(content_extracted)
-                    except Exception:
-                        # Fallback: manually parse stringified objects in a quoted list, e.g. ["{"key":"val"}", "{\"key\":\"val\"}"]
+                                start = content.find("[")
+                                end = content.rfind("]")
+                                if start != -1 and end != -1 and end > start:
+                                    content_extracted = content[start:end+1].strip()
+                                else:
+                                    content_extracted = content
                         try:
-                            inner = content_extracted.strip()
-                            if inner.startswith('[') and inner.endswith(']'):
-                                inner = inner[1:-1].strip()
-                            items = []
-                            raw_items = re.findall(r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'', inner)
-                            for item in raw_items:
-                                item_clean = item[1:-1].strip()
-                                item_clean = item_clean.replace('\\"', '"').replace("\\'", "'")
-                                try:
-                                    loaded = json.loads(item_clean)
-                                    if isinstance(loaded, dict):
-                                        items.append(loaded)
-                                    elif isinstance(loaded, list):
-                                        items.extend(loaded)
-                                except Exception:
-                                    pass
-                            if items:
-                                commands = items
-                            else:
-                                raise
-                        except Exception:
                             commands = json.loads(content_extracted)
+                        except Exception:
+                            # Fallback: manually parse stringified objects in a quoted list, e.g. ["{"key":"val"}", "{\"key\":\"val\"}"]
+                            try:
+                                inner = content_extracted.strip()
+                                if inner.startswith('[') and inner.endswith(']'):
+                                    inner = inner[1:-1].strip()
+                                items = []
+                                raw_items = re.findall(r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'', inner)
+                                for item in raw_items:
+                                    item_clean = item[1:-1].strip()
+                                    item_clean = item_clean.replace('\\"', '"').replace("\\'", "'")
+                                    try:
+                                        loaded = json.loads(item_clean)
+                                        if isinstance(loaded, dict):
+                                            items.append(loaded)
+                                        elif isinstance(loaded, list):
+                                            items.extend(loaded)
+                                    except Exception:
+                                        pass
+                                if items:
+                                    commands = items
+                                else:
+                                    raise
+                            except Exception:
+                                commands = json.loads(content_extracted)
 
             if not isinstance(commands, list):
                 commands = [commands]
@@ -623,7 +655,7 @@ CRITICAL RULES - follow these exactly:
                         parsed_commands.append(cmd)
                 else:
                     parsed_commands.append(cmd)
-            commands = parsed_commands
+            commands = [cmd for cmd in parsed_commands if isinstance(cmd, dict)]
 
             # Truncate batch at the first navigation click (page change) but keep it
             truncated = []
@@ -669,69 +701,105 @@ CRITICAL RULES - follow these exactly:
         trace_step_index = state.get("trace_step_index", 0)
 
         for cmd in commands:
+            if not isinstance(cmd, dict):
+                continue
             if "error" in cmd:
                 print(f"Plan contains error: {cmd['error']}")
                 continue
 
-            # --- Live validation & Sanitization ---
-            live_snapshot = self.bridge.graph.snapshot()
-            live_values = self._get_values_dict()
-            components_info = live_snapshot.get("components", {})
-            
-            allowed_set_targets = []
-            allowed_call_targets = []
-            all_allowed_selectors_set = set()
-            
-            for comp_id, comp in components_info.items():
-                slots = comp.get("stateSlots", {})
-                for slot_key, slot_val in slots.items():
-                    is_collection = isinstance(slot_val, list) or (isinstance(slot_val, dict) and len(slot_val) > 1)
-                    if not is_collection:
-                        allowed_set_targets.append(f"{comp_id}.{slot_key}")
-                
-                elems = comp.get("interactiveElements", [])
-                for el in elems:
-                    sel = el.get("selector", "")
-                    visible = el.get("visible", True)
-                    disabled = el.get("disabled", False)
-                    if sel and visible and not disabled:
-                        all_allowed_selectors_set.add(sel)
-                
-                actions = comp.get("actions", [])
-                for action in (actions or []):
-                    allowed_call_targets.append(f"{comp_id}.{action}")
-                    
-            allowed_set_targets_set = set(allowed_set_targets)
-            allowed_call_targets_set = set(allowed_call_targets)
-            
-            cmd_type = cmd.get("type")
+            # --- Live validation & Sanitization with Polling ---
             rejection_reason = None
             is_skipped = False
             
-            if cmd_type == "setState":
-                target = cmd.get("target", "")
-                if target not in allowed_set_targets_set:
-                    rejection_reason = f"Command rejected: target '{target}' is not in the current registry. The component may have unmounted. Check the current registry before retrying."
-                else:
-                    desired_val = cmd.get("value")
-                    current_val = live_values.get(target)
-                    if current_val == desired_val:
-                        is_skipped = True
-            elif cmd_type == "callAction":
-                target = cmd.get("target", "")
-                if "." not in target:
-                    rejection_reason = f"Command rejected: malformed callAction target '{target}' (missing action name)."
-                elif target not in allowed_call_targets_set:
-                    rejection_reason = f"Command rejected: target action '{target}' is not registered. Check the current registry before retrying."
-            elif cmd_type == "dispatchEvent":
-                payload = cmd.get("payload")
-                if isinstance(payload, str) and (payload.startswith("#") or payload.startswith(".")):
-                    if payload not in all_allowed_selectors_set:
-                        rejection_reason = f"Command rejected: selector '{payload}' is not in the current registry. The component may have unmounted or selector is invalid. Check the current registry before retrying."
-            elif cmd_type == "waitFor":
-                target = cmd.get("target", "")
-                if any(x in target.lower() for x in ["consolelogs", "applog", "logs"]):
-                    rejection_reason = f"Command rejected: waitFor target '{target}' contains a debug ledger or log field. WaitFor is for application state slots only."
+            # Poll up to 1.5s (15 iterations of 100ms) for the target/selector to appear in the registry
+            for attempt in range(15):
+                live_snapshot = self.bridge.graph.snapshot()
+                live_values = self._get_values_dict()
+                components_info = live_snapshot.get("components", {})
+                
+                allowed_set_targets = []
+                allowed_call_targets = []
+                all_allowed_selectors_set = set()
+                
+                for comp_id, comp in components_info.items():
+                    slots = comp.get("stateSlots", {})
+                    for slot_key, slot_val in slots.items():
+                        is_collection = isinstance(slot_val, list) or (isinstance(slot_val, dict) and len(slot_val) > 1)
+                        if not is_collection:
+                            allowed_set_targets.append(f"{comp_id}.{slot_key}")
+                    
+                    elems = comp.get("interactiveElements", [])
+                    for el in elems:
+                        sel = el.get("selector", "")
+                        visible = el.get("visible", True)
+                        disabled = el.get("disabled", False)
+                        if sel and visible and not disabled:
+                            all_allowed_selectors_set.add(sel)
+                    
+                    actions = comp.get("actions", [])
+                    for action in (actions or []):
+                        allowed_call_targets.append(f"{comp_id}.{action}")
+
+                # Extract any annotated selectors from the business logic for the current route
+                if self.business_context:
+                    try:
+                        from react_agent_bridge.business_logic.parser import BusinessLogicParser
+                        doc = BusinessLogicParser.parse(self.business_context)
+                        current_route = live_values.get("__context__#env.pathname") or "/"
+                        for entry in doc.glossary.values():
+                            route_match = False
+                            if entry.routes:
+                                for r in entry.routes:
+                                    if r == current_route or current_route.startswith(r):
+                                        route_match = True
+                                        break
+                            else:
+                                route_match = True
+                            
+                            if route_match:
+                                # Match #selectors or .selectors in description
+                                selectors = re.findall(r'(#[a-zA-Z0-9\-_]+|\.[a-zA-Z0-9\-_]+)', entry.description)
+                                for sel in selectors:
+                                    all_allowed_selectors_set.add(sel)
+                    except Exception as e:
+                        logger.error(f"Failed to parse business context for allowed selectors: {e}")
+                        
+                allowed_set_targets_set = set(allowed_set_targets)
+                allowed_call_targets_set = set(allowed_call_targets)
+                
+                cmd_type = cmd.get("type")
+                rejection_reason = None
+                is_skipped = False
+                
+                if cmd_type == "setState":
+                    target = cmd.get("target", "")
+                    if target not in allowed_set_targets_set:
+                        rejection_reason = f"Command rejected: target '{target}' is not in the current registry. The component may have unmounted. Check the current registry before retrying."
+                    else:
+                        desired_val = cmd.get("value")
+                        current_val = live_values.get(target)
+                        if current_val == desired_val:
+                            is_skipped = True
+                elif cmd_type == "callAction":
+                    target = cmd.get("target", "")
+                    if "." not in target:
+                        rejection_reason = f"Command rejected: malformed callAction target '{target}' (missing action name)."
+                    elif target not in allowed_call_targets_set:
+                        rejection_reason = f"Command rejected: target action '{target}' is not registered. Check the current registry before retrying."
+                elif cmd_type == "dispatchEvent":
+                    payload = cmd.get("payload")
+                    if isinstance(payload, str) and (payload.startswith("#") or payload.startswith(".")):
+                        if payload not in all_allowed_selectors_set:
+                            rejection_reason = f"Command rejected: selector '{payload}' is not in the current registry. The component may have unmounted or selector is invalid. Check the current registry before retrying."
+                elif cmd_type == "waitFor":
+                    target = cmd.get("target", "")
+                    if any(x in target.lower() for x in ["consolelogs", "applog", "logs"]):
+                        rejection_reason = f"Command rejected: waitFor target '{target}' contains a debug ledger or log field. WaitFor is for application state slots only."
+                
+                if not rejection_reason or is_skipped:
+                    break
+                
+                await asyncio.sleep(0.1)
             
             if rejection_reason:
                 print(f"{YELLOW}[Sanitizer] Rejected command: {rejection_reason}{RESET}")

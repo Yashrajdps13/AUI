@@ -1,59 +1,39 @@
 # nextjs-flow
 
-A minimal **Next.js 14 App Router** example demonstrating how `react-agent-bridge` integrates with Server and Client Components.
+A Next.js 14 App Router example demonstrating how `react-agent-bridge` integrates with Server and Client Components using direct API calls.
 
-## What This Shows
+## Project Structure
 
-| File | Component Type | In Agent Registry? |
+| File | Component Type | Instrumented? |
 |:---|:---|:---|
-| `app/page.tsx` | Server Component | ❌ No — plugin skips files without `'use client'` |
+| `app/page.tsx` | Server Component | ❌ No — plugin skips Server Components |
 | `app/counter/page.tsx` | Server Component | ❌ No |
 | `app/counter/CounterClient.tsx` | **Client Component** | ✅ Yes — `count` slot is tracked |
 | `app/readonly/ReadonlyRateClient.tsx` | **Client Component** | ✅ Yes — `efficiencyRate` slot (`@writeable user`) |
-| `app/providers.tsx` | **Client Component** | ❌ No — no useState calls |
+| `app/providers.tsx` | **Client Component** | ✅ Yes — connects the WebSocket client |
 
-## Key Pattern
+## Setup & Running
 
-1. `app/providers.tsx` is a `'use client'` component that calls `AgentWebSocketManager.connect()` in a `useEffect`. This is the only place the connection is established.
-
-2. `app/layout.tsx` is a Server Component that wraps children with `<Providers>`. The agent connection is available throughout the app.
-
-3. Client Components declare `'use client'` at the top of the file. The Babel plugin detects this and transforms `useState` calls into instrumented `useBridgeState` calls.
-
-4. Server Components have **no** `'use client'` directive. The Babel plugin skips them entirely — they run on the server and are never instrumented.
-
-## Setup
-
+### 1. Start the Frontend
+Install dependencies and run the Next.js dev server:
 ```bash
-# From this directory
+cd examples/nextjs-flow
 npm install
 npm run dev
 ```
+Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-The app starts at http://localhost:3000.
-
-The Babel plugin is configured via [`babel.config.js`](./babel.config.js) using `next/babel` as the base preset:
-
-```js
-// babel.config.js
-module.exports = {
-  presets: ['next/babel'],
-  plugins: ['react-agent-bridge/babel-plugin'],
-};
-```
-
-When `babel.config.js` is present, Next.js automatically switches from SWC to Babel. No changes to `next.config.mjs` are needed.
-
-## Verify with the CLI
-
-With the app running and `react-agent-bridge` CLI installed:
-
+### 2. Run the Deterministic Walkthrough
+In a separate terminal:
 ```bash
-# See which components are registered
-react-agent-bridge registry
-
-# Watch live state changes as you click the counter
-react-agent-bridge watch
+cd examples/nextjs-flow
+python agent.py
 ```
 
-You should see `CounterClient` and `ReadonlyRateClient` in the registry, but **not** any of the Server Component pages.
+Step through the interactive command line prompt:
+1. **Navigate to /counter**: Triggers programmatic navigation from the Home page (`/`) to the Counter page (`/counter`).
+2. **Increment Counter**: Programmatically dispatches click events to the increment button 5 times, verifying live state graph updates.
+3. **Navigate back to Home**: Programmatically returns to `/`.
+4. **Navigate to /readonly**: Opens the Read-only page.
+5. **Verify Safety Rule**: Attempts to directly write to the `@writeable user` slot (`efficiencyRate`) via `setState`. The Rules Engine immediately rejects the command on the backend.
+6. **Command Audit Log**: Prints the append-only command audit log and browser ledger console logs recorded by the bridge.

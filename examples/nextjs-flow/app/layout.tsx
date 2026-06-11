@@ -1,5 +1,7 @@
+import './globals.css';
 import type { Metadata } from 'next';
 import { Providers } from './providers';
+import StateWatchTerminal from './components/StateWatchTerminal';
 
 export const metadata: Metadata = {
   title: 'nextjs-flow | react-agent-bridge',
@@ -14,12 +16,12 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        {/*
-          Providers is a Client Component that establishes the agent WebSocket
-          connection. All pages rendered inside will be visible to the agent
-          if they are Client Components with useState calls.
-        */}
-        <Providers>{children}</Providers>
+        <Providers>
+          <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+            {children}
+          </div>
+          <StateWatchTerminal />
+        </Providers>
       </body>
     </html>
   );

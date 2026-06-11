@@ -5,6 +5,9 @@ from react_agent_bridge.core.graph.state_graph import ApplicationStateGraph
 
 def target_mounted_rule(command: dict, graph: ApplicationStateGraph) -> Optional[RuleViolation]:
     """Ensures the target component is currently mounted in the state graph."""
+    if command.get("type") == "waitFor":
+        return None
+
     target = command.get("target")
     if not target:
         return None

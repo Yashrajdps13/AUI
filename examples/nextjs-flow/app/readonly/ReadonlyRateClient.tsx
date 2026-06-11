@@ -3,50 +3,46 @@
 import { useState } from 'react';
 import Link from 'next/link';
 
-/**
- * ReadonlyRateClient demonstrates a @writeable user slot.
- *
- * The agent can observe the efficiencyRate value in real time but any
- * attempt to mutate it via setState will be blocked by the Rules Engine.
- */
 export default function ReadonlyRateClient() {
   /**
-   * Computed task completion rate (0–100%).
+   * Computed task completion rate (0-100%).
    * @writeable user
    * @description Percentage of tasks completed in the current sprint
    */
   const [efficiencyRate, setEfficiencyRate] = useState(72);
 
   return (
-    <div style={{ fontFamily: 'system-ui, sans-serif', padding: '2rem', maxWidth: '480px', margin: '0 auto' }}>
-      <div style={{ marginBottom: '1.5rem' }}>
-        <Link href="/" style={{ color: '#0070f3', textDecoration: 'none' }}>
-          ← Back to Home
+    <div className="glass-card" style={{ maxWidth: '480px', width: '100%', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center', marginBottom: '0.5rem' }}>
+        <Link href="/" id="link-home" style={{ color: 'var(--accent)', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 500 }}>
+          <span>←</span> Back to Home
         </Link>
       </div>
 
-      <h1>Read-only Rate</h1>
-      <p style={{ color: '#555' }}>
-        The <code>efficiencyRate</code> slot has a{' '}
-        <code>@writeable user</code> annotation. Human users can change it; the
-        agent can only read it.
-      </p>
+      <div>
+        <h1 className="gradient-text" style={{ fontSize: '2.5rem', marginBottom: '0.5rem' }}>Read-only Rate</h1>
+        <p style={{ color: '#94a3b8', fontSize: '0.95rem' }}>
+          The <code>efficiencyRate</code> slot is annotated with <code>@writeable user</code>. 
+          Agents can observe it but direct writes via the API will be blocked.
+        </p>
+      </div>
 
       <div
         style={{
           padding: '1.5rem',
-          border: '1px solid #ddd',
-          borderRadius: '8px',
-          background: '#f9f9f9',
-          marginTop: '1.5rem',
+          background: 'rgba(0, 0, 0, 0.2)',
+          borderRadius: '12px',
+          border: '1px solid var(--border)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '1rem'
         }}
       >
-        <label
-          htmlFor="rate-slider"
-          style={{ display: 'block', fontWeight: 600, marginBottom: '0.5rem' }}
-        >
-          Efficiency Rate: <span id="rate-display">{efficiencyRate}%</span>
-        </label>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 600 }}>
+          <span>Efficiency Rate</span>
+          <span id="rate-display" style={{ color: 'var(--accent)', fontSize: '1.25rem' }}>{efficiencyRate}%</span>
+        </div>
+        
         <input
           id="rate-slider"
           type="range"
@@ -54,14 +50,12 @@ export default function ReadonlyRateClient() {
           max={100}
           value={efficiencyRate}
           onChange={(e) => setEfficiencyRate(Number(e.target.value))}
-          style={{ width: '100%' }}
+          style={{ width: '100%', height: '6px', borderRadius: '3px' }}
         />
       </div>
 
-      <p style={{ marginTop: '1rem', fontSize: '0.875rem', color: '#666' }}>
-        Run <code>react-agent-bridge registry</code> — you will see{' '}
-        <em>writeable: "user"</em> on this slot, meaning the agent cannot mutate
-        it.
+      <p style={{ fontSize: '0.85rem', color: '#64748b', textAlign: 'center' }}>
+        Try sliding the control manually to watch updates stream to the bridge.
       </p>
     </div>
   );
