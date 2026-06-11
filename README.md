@@ -61,12 +61,14 @@ Compatible with React 18+, Vite, webpack 5, and Create React App. Next.js suppor
 This is the path for developers adopting the library in their own project.
 
 ```bash
-npm install react-agent-bridge
+# Install via local path (not yet published on npm)
+npm install /path/to/react-agent-bridge
 ```
 `import 'react-agent-bridge/preflight'; import { AgentWebSocketManager } from 'react-agent-bridge'; AgentWebSocketManager.connect('ws://localhost:8000');`
 
 ```bash
-pip install react-agent-bridge
+# Install via local path (not yet published on pip)
+pip install /path/to/react-agent-bridge/sdk/python
 ```
 `from react_agent_bridge.core.client import ReactAgentBridge; bridge = ReactAgentBridge(); await bridge.start()`
 
