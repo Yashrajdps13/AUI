@@ -147,6 +147,33 @@ function Dashboard() {
 
 ---
 
+## 🕵️‍♂️ Passive Discovery & Golden Trace Replay
+
+`react-agent-bridge` features a built-in session recording, workflow inference, and instant execution system that enables zero-LLM-cost replays of complex multi-step forms and dashboards.
+
+### 1. Passive Discovery Mode
+When you run your application in **Discovery Mode**, the bridge acts as a passive recorder:
+* **Session Recording**: Captures every user event—clicks, keystrokes, route changes, React state values, and console outputs—and streams them to a local SQLite database (`discovery.db`).
+* **Workflow Clustering**: Upon stopping the recorder, the Outcome-Based Workflow Inference Engine analyzes the database. It clusters temporal state transitions, identifies target completion terminal states, and discovers preconditions (e.g., "Authentication token must be present before adding tasks").
+* **Developer Agent Context**: The engine outputs an automated, reviewable `agent-context.md` file. This acts as the semantic map/guidebook for your agent, describing discovered paths, valid state ranges, and sequencing constraints.
+
+> [!TIP]
+> To launch discovery mode on a connected app, simply run:
+> ```bash
+> react-agent-bridge discover
+> ```
+> Complete your workflow in the browser, then press `Ctrl+C` in your terminal to compile the session records into `agent-context.md`.
+
+### 2. Golden Trace Replay
+Once a workflow has been successfully completed (either by a human during discovery or by the agent during a successful planning run), it is saved in the SQLite trace store as a **Golden Trace**.
+
+* **Zero-LLM Execution**: When the Agent Runner receives a goal matching a known golden trace structure, it bypasses the LLM planner entirely.
+* **Parameter Mapping**: It extracts parameter variables (e.g., matching the new target project name or password inputs) and maps them directly onto the historical trace steps.
+* **Fast-Path Replay**: Dispatches the mapped sequence of events directly via the browser/web socket connection, executing complex flows in under **1 second** with **zero LLM cost**.
+* **Settlement Syncing**: Replay commands wait for the settlement handshake before triggering subsequent steps, guaranteeing robustness against slow network requests or asynchronous rendering delays.
+
+---
+
 ## 🛠️ Developer CLI Utility
 
 The `react-agent-bridge` command-line utility provides immediate, zero-friction debugging, inspection, and health checks for any connected React application.
