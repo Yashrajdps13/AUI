@@ -15,6 +15,7 @@ function transform(code: string, filename?: string): string {
 describe('Babel Plugin', () => {
   it('should transform direct useState call and inject helper import', () => {
     const code = `
+      'use client';
       import { useState } from 'react';
       function MyComponent() {
         const [count, setCount] = useState(0);
@@ -28,6 +29,7 @@ describe('Babel Plugin', () => {
 
   it('should transform React.useState call', () => {
     const code = `
+      'use client';
       import React from 'react';
       function MyComponent() {
         const [text, setText] = React.useState("hello");
@@ -41,6 +43,7 @@ describe('Babel Plugin', () => {
 
   it('should count multiple hooks correctly within same component', () => {
     const code = `
+      'use client';
       import { useState } from 'react';
       function Dashboard() {
         const [user, setUser] = useState(null);
@@ -57,6 +60,7 @@ describe('Babel Plugin', () => {
 
   it('should resolve component name from arrow function variable declaration', () => {
     const code = `
+      'use client';
       import { useState } from 'react';
       const ArrowCounter = () => {
         const [count, setCount] = useState(0);
@@ -69,6 +73,7 @@ describe('Babel Plugin', () => {
 
   it('should resolve component name from default anonymous export using filename', () => {
     const code = `
+      'use client';
       import { useState } from 'react';
       export default function() {
         const [items, setItems] = useState([]);
@@ -81,6 +86,7 @@ describe('Babel Plugin', () => {
 
   it('should generate fallback state keys if destructuring is not used', () => {
     const code = `
+      'use client';
       import { useState } from 'react';
       function Counter() {
         const stateArray = useState(0);
@@ -93,6 +99,7 @@ describe('Babel Plugin', () => {
 
   it('should fallback to state_index if not assigned directly to variable', () => {
     const code = `
+      'use client';
       import { useState } from 'react';
       function Counter() {
         console.log(useState(0));
@@ -105,6 +112,7 @@ describe('Babel Plugin', () => {
 
   it('should extract JSDoc description and pass it as metadata to _useBridgeState', () => {
     const code = `
+      'use client';
       import { useState } from 'react';
       function MyComponent() {
         /** The current count of clicks */
@@ -119,6 +127,7 @@ describe('Babel Plugin', () => {
 
   it('should parse @description or @desc tags inside JSDoc comment', () => {
     const code = `
+      'use client';
       import { useState } from 'react';
       function Profile() {
         /**
@@ -136,6 +145,7 @@ describe('Babel Plugin', () => {
 
   it('should parse @sensitive or @private tags to inject sensitive: true metadata', () => {
     const code1 = `
+      'use client';
       import { useState } from 'react';
       function Profile() {
         /**
@@ -152,6 +162,7 @@ describe('Babel Plugin', () => {
     expect(output1).toContain('sensitive: true');
 
     const code2 = `
+      'use client';
       import { useState } from 'react';
       function MyCard() {
         /** @private */
@@ -166,11 +177,41 @@ describe('Babel Plugin', () => {
 
   it('should auto-inject react-agent-bridge preflight import when react-dom is imported', () => {
     const code = `
+      'use client';
       import React from 'react';
       import ReactDOM from 'react-dom/client';
       import App from './App';
     `;
     const output = transform(code);
     expect(output).toContain('import "react-agent-bridge";');
+  });
+
+  it('should skip files without "use client" directive (Next.js Server Components)', () => {
+    const code = `
+      import { useState } from 'react';
+      function ServerComponent() {
+        const [count, setCount] = useState(0);
+        return null;
+      }
+    `;
+    const output = transform(code);
+    // Plugin must skip the file — no transformation, no injected imports
+    expect(output).not.toContain('_useBridgeState');
+    expect(output).not.toContain('react-agent-bridge');
+  });
+
+  it('should skip files with "use server" directive', () => {
+    const code = `
+      'use server';
+      import { useState } from 'react';
+      function ServerAction() {
+        const [count, setCount] = useState(0);
+        return null;
+      }
+    `;
+    const output = transform(code);
+    // 'use server' is not 'use client' — must be skipped
+    expect(output).not.toContain('_useBridgeState');
+    expect(output).not.toContain('react-agent-bridge');
   });
 });

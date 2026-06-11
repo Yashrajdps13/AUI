@@ -211,6 +211,11 @@ class AgentWebSocketManagerImpl {
    * Connects to the agent backend WebSocket.
    */
   connect(url: string, options?: { writeScope?: WriteSecurityScope }): void {
+    // SSR guard: WebSocket connections are browser-only.
+    // In Next.js App Router, this method may be imported on the server
+    // (e.g. in a Server Component that re-exports it). Do nothing there.
+    if (typeof window === 'undefined') return;
+
     this.url = url;
     this.isDisconnecting = false;
     this.writeScope = options?.writeScope;
