@@ -302,6 +302,7 @@ Output strictly valid JSON only. Do not wrap in markdown blocks or include expla
            - ComponentName.route: equals "/path/to/route" (use when checking the current route)
            Example: if navigating to a ProjectDetailView, set target: "ProjectDetailView.isMounted", operator: "equals", value: true.
         6. You MUST only compile success conditions for the actions described in the "User Query". The "Original Context Query" is provided strictly as background context to help you resolve pronouns (like "its", "that", "this") or references. Do NOT compile success conditions for parts of the "Original Context Query" that are not requested in the "User Query".
+        7. For goals that request incrementing or decrementing a numeric value or counter by a specific amount (e.g. "increment the counter three times"), you MUST compute the target value based on the current value in the registry snapshot (e.g. current + 3), and compile a success condition using the "equals" operator targeting that exact value (e.g. target: "ReduxStore#redux.counter.value", operator: "equals", value: 3). DO NOT use the "changed" operator for counters or numeric values if a specific target value can be computed.
         
         CRITICAL RULES FOR FAILURE CONDITIONS:
         1. Failure conditions are evaluated at every single step, INCLUDING step 0 (before the agent has executed any actions).
