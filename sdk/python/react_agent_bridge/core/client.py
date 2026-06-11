@@ -158,7 +158,7 @@ class ReactAgentBridge(CommandDispatcher):
         if msg_type == "registryDelta":
             self.graph.apply_delta(msg)
             for comp in msg.added:
-                asyncio.create_task(self.subscribe(comp.id))
+                asyncio.create_task(self._safe_subscribe(comp.id))
             self._trigger_event("registry_update", msg)
 
         elif msg_type == "stateSnapshot":
@@ -195,6 +195,13 @@ class ReactAgentBridge(CommandDispatcher):
 
         else:
             logger.warning(f"Unhandled message type: {msg_type}")
+
+    async def _safe_subscribe(self, comp_id: str):
+        if comp_id in self.graph.components:
+            try:
+                await self.subscribe(comp_id)
+            except Exception as e:
+                logger.debug(f"Subscription failed for component {comp_id}: {e}")
 
     def discover(
         self,

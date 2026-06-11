@@ -15,12 +15,14 @@ class GoalCondition:
         """
         Evaluates the condition against a serialized graph snapshot dictionary or StateGraph.
         """
-        parts = self.target.rsplit(".", 1)
+        parts = self.target.split(".", 1)
         if len(parts) != 2:
             return False
-        comp_id, slot_key = parts
+        comp_id, path_str = parts
 
-        if hasattr(current_state, "get_slot_value"):
+        # Suffix-agnostic component lookup
+        comp = None
+        if hasattr(current_state, "get_component"):
             comp = current_state.get_component(comp_id)
             if not comp:
                 comp_id_clean = comp_id.split("#", 1)[0].split(":", 1)[0]
@@ -29,9 +31,6 @@ class GoalCondition:
                     if cid_clean == comp_id_clean:
                         comp = node
                         break
-            if not comp or slot_key not in comp.state_slots:
-                return self.operator == "falsy"
-            val = comp.state_slots[slot_key].value
         else:
             components = current_state.get("components", {})
             comp_data = components.get(comp_id)
@@ -41,14 +40,76 @@ class GoalCondition:
                     cid_clean = cid.split("#", 1)[0].split(":", 1)[0]
                     if cid_clean == comp_id_clean:
                         comp_data = cdata
+                        comp_id = cid
                         break
-            comp_data = comp_data or {}
-            slots_data = comp_data.get("stateSlots", {})
+            if comp_data:
+                class MockNode:
+                    def __init__(self, cid, data):
+                        self.id = cid
+                        self.route = data.get("route")
+                        self.state_slots = data.get("stateSlots", {})
+                comp = MockNode(comp_id, comp_data)
 
-            if slot_key not in slots_data:
+        # Handle virtual slots first
+        if path_str == "isMounted":
+            val = comp is not None
+            if self.operator == "equals":
+                return val == self.value
+            elif self.operator == "truthy":
+                return val
+            elif self.operator == "falsy":
+                return not val
+            return False
+
+        if path_str == "route":
+            val = comp.route if comp is not None else None
+            if self.operator == "equals":
+                return val == self.value
+            elif self.operator == "truthy":
+                return bool(val)
+            elif self.operator == "falsy":
+                return not bool(val)
+            elif self.operator == "changed":
+                return val is not None
+            return False
+
+        if comp is None:
+            return self.operator == "falsy"
+
+        import re
+        segments = path_str.split(".")
+        first_segment = segments[0]
+        match_bracket = re.match(r'^([^\[]+)(.*)$', first_segment)
+        if match_bracket:
+            slot_key = match_bracket.group(1)
+            brackets = match_bracket.group(2)
+        else:
+            slot_key = first_segment
+            brackets = ""
+
+        if hasattr(comp, "state_slots") and isinstance(comp.state_slots, dict):
+            if slot_key not in comp.state_slots:
                 return self.operator == "falsy"
+            slot_obj = comp.state_slots[slot_key]
+            if hasattr(slot_obj, "value"):
+                base_val = slot_obj.value
+            else:
+                base_val = slot_obj
+        else:
+            return self.operator == "falsy"
 
-            val = slots_data[slot_key]
+        nested_segments = []
+        if brackets:
+            nested_segments.extend(re.findall(r'\[\d+\]', brackets))
+        nested_segments.extend(segments[1:])
+
+        if nested_segments:
+            success, val = self._resolve_nested_value(base_val, nested_segments)
+            if not success:
+                return self.operator == "falsy"
+        else:
+            val = base_val
+
 
         if self.operator == "equals":
             return val == self.value
@@ -59,6 +120,36 @@ class GoalCondition:
         elif self.operator == "changed":
             return val is not None
         return False
+
+    def _resolve_nested_value(self, val: Any, path_segments: List[str]) -> tuple:
+        import re
+        curr = val
+        for segment in path_segments:
+            if curr is None:
+                return False, None
+            parts = re.split(r'(\[\d+\])', segment)
+            for part in parts:
+                if not part:
+                    continue
+                if part.startswith('[') and part.endswith(']'):
+                    idx_str = part[1:-1]
+                    try:
+                        idx = int(idx_str)
+                        if isinstance(curr, list) and 0 <= idx < len(curr):
+                            curr = curr[idx]
+                        else:
+                            return False, None
+                    except ValueError:
+                        return False, None
+                else:
+                    if isinstance(curr, dict) and part in curr:
+                        curr = curr[part]
+                    elif hasattr(curr, part):
+                        curr = getattr(curr, part)
+                    else:
+                        return False, None
+        return True, curr
+
 
 
 @dataclass

@@ -18,6 +18,7 @@ RED = "\033[1;31m"
 YELLOW = "\033[1;33m"
 GREEN = "\033[1;32m"
 CYAN = "\033[1;36m"
+MAGENTA = "\033[1;35m"
 RESET = "\033[0m"
 
 
@@ -95,6 +96,44 @@ class AgentRunner:
                 res[f"{comp.id}.{slot_key}"] = slot.value
         return res
 
+    def _compute_goal_signature(self, goal: Goal) -> str:
+        sig_parts = []
+        for cond in goal.success_conditions:
+            parts = cond.target.rsplit(".", 1)
+            if len(parts) == 2:
+                comp_id, slot_key = parts
+                clean_comp = comp_id.split("#", 1)[0]
+                sig_parts.append(f"{clean_comp}.{slot_key}:{cond.operator}")
+        sig_parts.sort()
+        return ",".join(sig_parts)
+
+    async def _decompose_goal(self, query: str) -> List[str]:
+        if self.model == "mock-model":
+            return [query]
+        try:
+            import litellm
+            messages = [
+                {"role": "system", "content": "You are a task decomposer that breaks down user requests into a JSON list of sequential strings representing execution stages. Output strictly valid JSON only."},
+                {"role": "user", "content": f"""Decompose the following goal into a JSON list of sequential, single-step execution stages:
+Goal: "{query}"
+
+Output strictly a JSON array of strings, e.g. ["stage 1", "stage 2"]. Do not add any markdown formatting or extra text."""}
+            ]
+            response = litellm.completion(
+                model=self.model,
+                messages=messages,
+                temperature=0.0
+            )
+            content = response.choices[0].message.content.strip()
+            # Clean markdown code blocks if present
+            content = content.replace("```json", "").replace("```", "").strip()
+            stages = json.loads(content)
+            if isinstance(stages, list) and all(isinstance(s, str) for s in stages):
+                return stages
+        except Exception as e:
+            logger.warning(f"Decomposition failed, using original goal as a single stage: {e}")
+        return [query]
+
     def _plan_node(self, state: AgentState) -> Dict[str, Any]:
         # Initialize trace variables in state if missing
         active_trace = state.get("active_trace")
@@ -103,15 +142,8 @@ class AgentRunner:
 
         # Helper to compute structural signature of goal
         def compute_goal_signature(goal: Goal) -> str:
-            sig_parts = []
-            for cond in goal.success_conditions:
-                parts = cond.target.rsplit(".", 1)
-                if len(parts) == 2:
-                    comp_id, slot_key = parts
-                    clean_comp = comp_id.split("#", 1)[0]
-                    sig_parts.append(f"{clean_comp}.{slot_key}:{cond.operator}")
-            sig_parts.sort()
-            return ",".join(sig_parts)
+            return self._compute_goal_signature(goal)
+
 
         # Helper to parameterize golden trace commands based on current goal
         def get_parameterized_cmd(step: Any, trace: Any, current_goal: Goal) -> Optional[dict]:
@@ -287,6 +319,9 @@ class AgentRunner:
         # current page's components/elements (not the stale initial snapshot).
         live_snapshot = self.bridge.graph.snapshot()
         live_values = self._get_values_dict()
+        state["registry"] = live_snapshot
+        state["values"] = live_values
+
 
         # Build a concise, flat representation of the current registry for the LLM.
         # This prevents small models from getting confused by deeply-nested JSON.
@@ -359,7 +394,12 @@ class AgentRunner:
         history_lines = []
         for h_idx, item in enumerate(state["action_history"]):
             cmd = item["command"]
-            changed = "produced state change" if item["state_changed"] else "ineffective (no state change)"
+            if item.get("rejected"):
+                changed = f"REJECTED - {item.get('error')}"
+            elif item.get("skipped"):
+                changed = "SKIPPED (already has value)"
+            else:
+                changed = "produced state change" if item["state_changed"] else "ineffective (no state change)"
             history_lines.append(f"{h_idx+1}. Command: {json.dumps(cmd)} -> Result: {changed}")
         history_str = "\n".join(history_lines) if history_lines else "No actions executed yet."
 
@@ -427,9 +467,10 @@ Your goal is to fulfill the user request by outputting a JSON array of bridge co
 Only work on the STILL NEEDED conditions above. DO NOT re-do any ALREADY SATISFIED condition.
 
 Available command types:
-1. setState  -> {{"type":"setState",  "target":"<ComponentID.slotKey>", "value":<val>}}
-2. callAction -> {{"type":"callAction", "target":"<ComponentID.actionName>", "args":[...]}}
+1. setState      -> {{"type":"setState",      "target":"<ComponentID.slotKey>", "value":<val>}}
+2. callAction    -> {{"type":"callAction",    "target":"<ComponentID.actionName>", "args":[...]}}
 3. dispatchEvent -> {{"type":"dispatchEvent", "target":"<ComponentID>", "event":"click"|"change"|"focus", "payload":"<css-selector>"}}
+4. waitFor       -> {{"type":"waitFor",       "target":"<ComponentID>|<ComponentID.slotKey>", "condition": {{"operator":"truthy"|"falsy"|"equals", "value":<val>}}, "timeoutMs":5000}}
 
 ALLOWED setState targets (ONLY use these exact strings for the target field of setState commands):
 {chr(10).join('  ' + t for t in allowed_set_targets)}
@@ -441,9 +482,9 @@ ALLOWED dispatchEvent selectors per component (ONLY use these exact selector str
 {allowed_selectors_str}
 
 CRITICAL RULES - follow these exactly:
-1. ONLY use selectors from the ALLOWED list above. DO NOT invent or guess selectors.
-2. ONLY use setState targets from the ALLOWED list above. DO NOT invent slot names.
-3. ONLY use callAction targets from the ALLOWED list above. DO NOT invent action names.
+1. Every target in every command (setState target, callAction target, dispatchEvent target and payload selector) MUST exactly match something currently visible in the COMPONENT REGISTRY or the ALLOWED lists above.
+2. DO NOT invent, guess, or reference any component IDs, slot names, action names, or selectors based on what you think should exist (e.g. from the goal description). If they are not in the registry snapshot, they do not exist.
+3. If a component, slot, action, or selector that you need is not in the registry snapshot yet, DO NOT guess it. Instead, you MUST use the `waitFor` command to wait for the target to appear, or stop.
 4. For dispatchEvent: "target" = ComponentID (e.g. "App#r9"), "payload" = css selector (e.g. "#btn-details-next"). NEVER swap these.
 5. Plan commands for the CURRENT page/step only. After clicking a page navigation button (Next/Submit/Pay), stop — the planner re-runs for the next page.
 6. If a slot already has the correct value, skip its setState command.
@@ -451,9 +492,37 @@ CRITICAL RULES - follow these exactly:
 8. Toggle buttons (e.g. session checkboxes) are ON/OFF — clicking again will REMOVE the item. If the condition is already satisfied, do NOT click that button again.
 9. Respond ONLY with a valid JSON array. No markdown fences, no extra text.
 10. Do NOT perform setState on state slots whose corresponding input/interactive elements are not currently visible in the COMPONENT REGISTRY. For example, if a form field input (such as cardNumber or selectedSessions) is not rendered on the current screen, do not set its state slot value until you navigate to the screen where it is rendered.
-"""
+11. If the required component is not mounted yet, wait for it to appear. Never plan actions on unmounted components.
+12. Do NOT invoke store actions (such as 'ZustandStore#AuthStore.loginAction') directly via callAction if they require credentials or inputs that are not already described as taking zero arguments or are not provided in the parameters. Instead, when input fields and submit/login buttons are visible in the component registry, you MUST interact with those UI form fields using setState and click the submit button using dispatchEvent. Ensure you always use the submit/click buttons to trigger form submissions rather than direct store/action invocation. """
         if self.business_context:
             system_prompt += f"\n\nBUSINESS CONTEXT & CRITICAL RULES:\n{self.business_context}"
+
+        # Stuck-detection for consecutive target rejections
+        target_rejections = {}
+        for hist_item in reversed(state["action_history"]):
+            hist_cmd = hist_item["command"]
+            h_target = hist_cmd.get("target")
+            if not h_target:
+                continue
+            if h_target not in target_rejections:
+                target_rejections[h_target] = {"count": 0, "active": True}
+            
+            if target_rejections[h_target]["active"]:
+                if hist_item.get("rejected"):
+                    target_rejections[h_target]["count"] += 1
+                else:
+                    target_rejections[h_target]["active"] = False
+                    
+        reframe_warnings = []
+        for h_target, info in target_rejections.items():
+            if info["count"] >= 3:
+                reframe_warnings.append(
+                    f"WARNING: The command target '{h_target}' was rejected {info['count']} times in a row because it was not found in the current component registry. "
+                    "This component or state slot is not currently mounted (it may have been unmounted due to a successful action, such as logging in or navigating). "
+                    "You MUST read the COMPONENT REGISTRY and CURRENT STATE VALUES above, identify which components are actually mounted right now, and plan your actions using only the currently mounted elements."
+                )
+        if reframe_warnings:
+            system_prompt += "\n\n" + "\n".join(reframe_warnings)
 
         if state["consecutive_ineffective_count"] >= self.consecutive_ineffective_limit:
             system_prompt += f"\n\nWARNING: The last {state['consecutive_ineffective_count']} consecutive actions produced NO change in application state. You are stuck! Please reason about why the previous attempts were ineffective, avoid repeating the same command parameters, and try a fundamentally different approach."
@@ -472,83 +541,95 @@ CRITICAL RULES - follow these exactly:
             )
             content = response.choices[0].message.content.strip()
 
-            match_json = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL)
-            if match_json:
-                content = match_json.group(1).strip()
-            else:
-                match_block = re.search(r"```\s*(.*?)\s*```", content, re.DOTALL)
-                if match_block:
-                    content = match_block.group(1).strip()
-                else:
-                    start = content.find("[")
-                    end = content.rfind("]")
-                    if start != -1 and end != -1 and end > start:
-                        content = content[start:end+1].strip()
+            commands = None
+            try:
+                commands = json.loads(content)
+            except Exception:
+                # Try JSON repair / extraction if first parse fails
+                content_stripped = content.strip()
+                # If wrapped as string array, e.g. ["{...}"] or [ "{...}" ] or ['{...}']
+                if (re.match(r'^\[\s*"\s*\{', content_stripped) and re.search(r'\}\s*"\s*\]$', content_stripped)) or \
+                   (re.match(r"^\[\s*'\s*\{", content_stripped) and re.search(r"\}\s*'\s*\]$", content_stripped)):
+                    first_curly = content_stripped.find('{')
+                    last_curly = content_stripped.rfind('}')
+                    if first_curly != -1 and last_curly != -1 and last_curly > first_curly:
+                        repaired = '[' + content_stripped[first_curly:last_curly+1] + ']'
+                        try:
+                            commands = json.loads(repaired)
+                        except Exception:
+                            pass
+                
+                # If still not parsed, try generic markdown block extraction
+                if commands is None:
+                    match_json = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL)
+                    if match_json:
+                        content_extracted = match_json.group(1).strip()
+                    else:
+                        match_block = re.search(r"```\s*(.*?)\s*```", content, re.DOTALL)
+                        if match_block:
+                            content_extracted = match_block.group(1).strip()
+                        else:
+                            start = content.find("[")
+                            end = content.rfind("]")
+                            if start != -1 and end != -1 and end > start:
+                                content_extracted = content[start:end+1].strip()
+                            else:
+                                content_extracted = content
+                    commands = json.loads(content_extracted)
 
-            commands = json.loads(content)
             if not isinstance(commands, list):
                 commands = [commands]
 
-            # --- Post-parse validation & sanitization ---
-            # Build flat sets of what is allowed so we can filter invalid LLM output
-            allowed_set_targets_set = set(allowed_set_targets)
-            all_allowed_selectors_set = set()
-            for sels in allowed_selectors_by_comp.values():
-                all_allowed_selectors_set.update(sels)
+            # Post-parse: If any command was parsed as a string (due to LLM wrapping elements in quotes),
+            # try to parse it as a JSON object.
+            parsed_commands = []
+            for cmd in commands:
+                if isinstance(cmd, str):
+                    try:
+                        parsed_cmd = json.loads(cmd)
+                        if isinstance(parsed_cmd, dict):
+                            parsed_commands.append(parsed_cmd)
+                        elif isinstance(parsed_cmd, list):
+                            parsed_commands.extend(parsed_cmd)
+                        else:
+                            parsed_commands.append(cmd)
+                    except Exception:
+                        parsed_commands.append(cmd)
+                else:
+                    parsed_commands.append(cmd)
+            commands = parsed_commands
 
-            sanitized = []
+            # Truncate batch at the first navigation click (page change) but keep it
+            truncated = []
             for raw_cmd in commands:
                 cmd_type = raw_cmd.get("type")
-                if cmd_type == "setState":
-                    target = raw_cmd.get("target", "")
-                    if target not in allowed_set_targets_set:
-                        print(f"{YELLOW}[Sanitizer] Dropping setState with invalid target: {target!r}{RESET}")
-                        continue
-                    # Skip if the slot already holds the exact desired value.
-                    # Prevents the LLM from redundantly setting already-correct slots,
-                    # which would trigger the repetition blocker and abort the whole batch.
-                    desired_val = raw_cmd.get("value")
-                    current_val = live_values.get(target)
-                    if current_val == desired_val:
-                        print(f"{CYAN}[Sanitizer] Skipping setState on {target!r} — already has value {json.dumps(desired_val)}.{RESET}")
-                        continue
-                elif cmd_type == "callAction":
-                    target = raw_cmd.get("target", "")
-                    # callAction MUST have a dot (ComponentID.actionName)
-                    if "." not in target:
-                        print(f"{YELLOW}[Sanitizer] Dropping malformed callAction (no action name): {target!r}{RESET}")
-                        continue
-                    # Validate against allowed actions list (must be explicitly registered)
-                    if target not in allowed_call_targets:
-                        print(f"{YELLOW}[Sanitizer] Dropping callAction with unregistered action: {target!r}{RESET}")
-                        continue
-                elif cmd_type == "dispatchEvent":
-                    payload = raw_cmd.get("payload")
-                    # If payload is a selector string, validate it's in the allowed list
-                    if isinstance(payload, str) and (payload.startswith("#") or payload.startswith(".")):
-                        if payload not in all_allowed_selectors_set:
-                            print(f"{YELLOW}[Sanitizer] Dropping dispatchEvent with unknown selector: {payload!r}{RESET}")
-                            continue
-
-                sanitized.append(raw_cmd)
-
-
-                # Stop planning after the first TRUE navigation click (page change).
-                # Session toggles / checkboxes are NOT navigation — do NOT break on them.
+                truncated.append(raw_cmd)
                 if cmd_type == "dispatchEvent" and raw_cmd.get("event") == "click":
                     nav_indicators = ["btn-next", "btn-pay", "btn-submit", "btn-reset", "btn-back", "-next", "-pay"]
                     payload = raw_cmd.get("payload", "") or ""
                     if any(ind in payload.lower() for ind in nav_indicators):
                         print(f"{CYAN}[Sanitizer] Navigation click detected ({payload!r}), truncating batch to prevent multi-page planning.{RESET}")
                         break
+            commands = truncated
 
-            commands = sanitized
-            # --- End sanitization ---
-
-            return {"commands": commands, "status": "planned", "llm_calls_made": llm_calls_made}
+            return {
+                "commands": commands,
+                "status": "planned",
+                "llm_calls_made": llm_calls_made,
+                "registry": live_snapshot,
+                "values": live_values
+            }
         except Exception as e:
             print(f"{RED}LLM planning failed: {e}{RESET}")
-            return {"commands": [], "status": "failed", "error": f"LLM planning failed: {e}", "llm_calls_made": llm_calls_made}
+            print(f"{YELLOW}Raw LLM content was:\n{content}\n{RESET}")
+            return {
+                "commands": [],
+                "status": "failed",
+                "error": f"LLM planning failed: {e}",
+                "llm_calls_made": llm_calls_made,
+                "registry": live_snapshot,
+                "values": live_values
+            }
 
     async def _execute_node(self, state: AgentState) -> Dict[str, Any]:
         commands = state["commands"]
@@ -564,6 +645,88 @@ CRITICAL RULES - follow these exactly:
         for cmd in commands:
             if "error" in cmd:
                 print(f"Plan contains error: {cmd['error']}")
+                continue
+
+            # --- Live validation & Sanitization ---
+            live_snapshot = self.bridge.graph.snapshot()
+            live_values = self._get_values_dict()
+            components_info = live_snapshot.get("components", {})
+            
+            allowed_set_targets = []
+            allowed_call_targets = []
+            all_allowed_selectors_set = set()
+            
+            for comp_id, comp in components_info.items():
+                slots = comp.get("stateSlots", {})
+                for slot_key, slot_val in slots.items():
+                    is_collection = isinstance(slot_val, list) or (isinstance(slot_val, dict) and len(slot_val) > 1)
+                    if not is_collection:
+                        allowed_set_targets.append(f"{comp_id}.{slot_key}")
+                
+                elems = comp.get("interactiveElements", [])
+                for el in elems:
+                    sel = el.get("selector", "")
+                    visible = el.get("visible", True)
+                    disabled = el.get("disabled", False)
+                    if sel and visible and not disabled:
+                        all_allowed_selectors_set.add(sel)
+                
+                actions = comp.get("actions", [])
+                for action in (actions or []):
+                    allowed_call_targets.append(f"{comp_id}.{action}")
+                    
+            allowed_set_targets_set = set(allowed_set_targets)
+            allowed_call_targets_set = set(allowed_call_targets)
+            
+            cmd_type = cmd.get("type")
+            rejection_reason = None
+            is_skipped = False
+            
+            if cmd_type == "setState":
+                target = cmd.get("target", "")
+                if target not in allowed_set_targets_set:
+                    rejection_reason = f"Command rejected: target '{target}' is not in the current registry. The component may have unmounted. Check the current registry before retrying."
+                else:
+                    desired_val = cmd.get("value")
+                    current_val = live_values.get(target)
+                    if current_val == desired_val:
+                        is_skipped = True
+            elif cmd_type == "callAction":
+                target = cmd.get("target", "")
+                if "." not in target:
+                    rejection_reason = f"Command rejected: malformed callAction target '{target}' (missing action name)."
+                elif target not in allowed_call_targets_set:
+                    rejection_reason = f"Command rejected: target action '{target}' is not registered. Check the current registry before retrying."
+            elif cmd_type == "dispatchEvent":
+                payload = cmd.get("payload")
+                if isinstance(payload, str) and (payload.startswith("#") or payload.startswith(".")):
+                    if payload not in all_allowed_selectors_set:
+                        rejection_reason = f"Command rejected: selector '{payload}' is not in the current registry. The component may have unmounted or selector is invalid. Check the current registry before retrying."
+            elif cmd_type == "waitFor":
+                target = cmd.get("target", "")
+                if any(x in target.lower() for x in ["consolelogs", "applog", "logs"]):
+                    rejection_reason = f"Command rejected: waitFor target '{target}' contains a debug ledger or log field. WaitFor is for application state slots only."
+            
+            if rejection_reason:
+                print(f"{YELLOW}[Sanitizer] Rejected command: {rejection_reason}{RESET}")
+                action_history.append({
+                    "command": cmd,
+                    "state_changed": False,
+                    "error": rejection_reason,
+                    "rejected": True
+                })
+                consecutive_ineffective += 1
+                step_count += 1
+                continue
+                
+            if is_skipped:
+                target = cmd.get("target", "")
+                print(f"{CYAN}[Sanitizer] Skipping setState on {target!r} — already has value {json.dumps(cmd.get('value'))}.{RESET}")
+                action_history.append({
+                    "command": cmd,
+                    "state_changed": False,
+                    "skipped": True
+                })
                 continue
 
             # 1. Repetition Check
@@ -694,8 +857,18 @@ CRITICAL RULES - follow these exactly:
                         active_trace = None
                         trace_step_index = 0
 
+        # Sleep to allow React to render any final updates and WebSocket messages to be processed
+        await asyncio.sleep(0.5)
+
+        status = "executed"
+        error = None
+        if consecutive_ineffective >= 5:
+            status = "failed"
+            error = "Aborted: too many consecutive ineffective or rejected commands"
+
         return {
-            "status": "executed",
+            "status": status,
+            "error": error,
             "action_history": action_history,
             "consecutive_ineffective_count": consecutive_ineffective,
             "step_count": step_count,
@@ -734,142 +907,186 @@ CRITICAL RULES - follow these exactly:
         while not self.bridge.graph.get_mounted_components() and (time.time() - start_wait) < 3.0:
             await asyncio.sleep(0.1)
 
-        # 1. Compile Goal
-        snapshot = self.bridge.graph.snapshot()
+        # Check if we have an applicable golden trace for the entire high-level query
+        active_trace = None
         try:
-            goal = await self.bridge.llm_adapter.compile_goal(query, snapshot)
-            print(f"{GREEN}Successfully compiled Goal!{RESET}")
-            print(f"  Description: {goal.description}")
-            print(f"  Success Conditions:")
-            for cond in goal.success_conditions:
-                print(f"    - {cond.target} {cond.operator} {cond.value}")
-            if goal.failure_conditions:
-                print(f"  Failure Conditions:")
-                for cond in goal.failure_conditions:
-                    print(f"    - {cond.target} {cond.operator} {cond.value}")
+            from react_agent_bridge.discovery.traces import GoldenTraceStore
+            store = GoldenTraceStore(self.db_path)
+            live_values = self._get_values_dict()
+            traces = store.find_applicable_traces(query, live_values, min_confidence=0.8)
+            if traces:
+                active_trace = traces[0]
+                print(f"{CYAN}[Trace Replay] Found applicable golden trace for high-level goal (ID: {active_trace.trace_id}). Bypassing decomposition.{RESET}")
         except Exception as e:
-            print(f"{RED}Failed to compile goal: {e}{RESET}")
-            return {"status": "failed", "error": str(e)}
+            logger.error(f"Failed to query trace store for high-level goal: {e}")
 
-        # Ensure goal step limit respects runner limit
-        goal.max_steps = self.max_steps
-
-        # 2. Build initial state
-        initial_val = self._get_values_dict()
-        state: AgentState = {
-            "query": query,
-            "goal": goal,
-            "registry": snapshot,
-            "values": initial_val,
-            "commands": [],
-            "action_history": [],
-            "consecutive_ineffective_count": 0,
-            "step_count": 0,
-            "status": "init",
-            "error": None,
-            "active_trace": None,
-            "trace_step_index": 0,
-            "initial_values": initial_val,
-            "llm_calls_made": 0
-        }
-
-        # 3. Run the workflow
-        start_exec_time = time.time()
-        result = await self.graph.ainvoke(state, config={"recursion_limit": 100})
-
-        # 4. Check outcome and update status
-        success_met = True
-        for cond in goal.success_conditions:
-            if not cond.evaluate(self.bridge.graph):
-                success_met = False
-                break
-
-        if goal.success_conditions and success_met:
-            print(f"\n{GREEN}[Success] Goal accomplished! Steps taken: {result['step_count']}{RESET}")
-            await self.bridge.set_agent_status("succeeded")
-
-            # Handle Golden Trace recording / update
-            try:
-                active_trace = result.get("active_trace")
-                from react_agent_bridge.discovery.traces import GoldenTraceStore
-                store = GoldenTraceStore(self.db_path)
-                
-                if active_trace:
-                    # Successfully replayed trace: promote its confidence
-                    print(f"{GREEN}[Trace Replay] Replayed trace successfully. Promoting confidence...{RESET}")
-                    store.update_trace_confidence(active_trace.trace_id, succeeded=True)
-                else:
-                    # Planned via LLM: record new trace if we actually had valid steps
-                    valid_steps = [h for h in result.get("action_history", []) if not h.get("blocked")]
-                    if valid_steps:
-                        import uuid
-                        from react_agent_bridge.discovery.traces import GoldenTrace, GoldenTraceStep
-                        
-                        steps = []
-                        for h in valid_steps:
-                            cmd = h["command"]
-                            steps.append(GoldenTraceStep(
-                                command_type=cmd["type"],
-                                target=cmd["target"],
-                                value=cmd.get("value"),
-                                event=cmd.get("event"),
-                                selector=cmd.get("payload"),
-                                args=cmd.get("args"),
-                                pre_state_snapshot=h.get("pre_state", {}),
-                                post_state_snapshot=h.get("post_state", {}),
-                                settle_time_ms=h.get("settle_time_ms", 0.0)
-                            ))
-
-                        import hashlib
-                        mounted = self.bridge.graph.get_mounted_components()
-                        names = sorted([c.display_name for c in mounted])
-                        app_version_hash = hashlib.md5(json.dumps(names).encode("utf-8")).hexdigest()[:16]
-
-                        # Helper to compute structural signature of goal
-                        def compute_goal_signature(goal: Goal) -> str:
-                            sig_parts = []
-                            for cond in goal.success_conditions:
-                                parts = cond.target.rsplit(".", 1)
-                                if len(parts) == 2:
-                                    comp_id, slot_key = parts
-                                    clean_comp = comp_id.split("#", 1)[0]
-                                    sig_parts.append(f"{clean_comp}.{slot_key}:{cond.operator}")
-                            sig_parts.sort()
-                            return ",".join(sig_parts)
-
-                        sig = compute_goal_signature(goal)
-
-                        trace = GoldenTrace(
-                            trace_id=str(uuid.uuid4()),
-                            workflow_name=goal.description,
-                            goal_description=query,
-                            recorded_at=time.time(),
-                            application_version_hash=app_version_hash,
-                            precondition_state=result.get("initial_values", {}),
-                            steps=steps,
-                            postcondition_state=self._get_values_dict(),
-                            execution_time_ms=(time.time() - start_exec_time) * 1000.0,
-                            llm_calls_made=result.get("llm_calls_made", 0),
-                            confidence=1.0,
-                            structural_signature=sig
-                        )
-                        store.record_trace(trace)
-                        print(f"{GREEN}[Trace Replay] Successfully recorded new golden trace (ID: {trace.trace_id}){RESET}")
-            except Exception as e:
-                logger.error(f"Failed to record/update trace: {e}", exc_info=True)
-
-        elif result["step_count"] >= goal.max_steps:
-            print(f"\n{RED}[Failure] Step budget exceeded without satisfying the goal!{RESET}")
-            if "action_history" in result:
-                print("Sequence of failed actions:")
-                for idx, item in enumerate(result["action_history"]):
-                    print(f"  {idx+1}. Command: {json.dumps(item['command'])} | State Changed: {item['state_changed']}")
-            print("\nLast known state values:")
-            for target, val in self._get_values_dict().items():
-                print(f"  {target} = {val}")
-            await self.bridge.set_agent_status("failed")
+        if active_trace:
+            stages = [query]
         else:
-            print(f"\n{RED}[Failed] Planner loop finished without satisfying conditions. Error: {result.get('error')}{RESET}")
-            await self.bridge.set_agent_status("failed")
+            # Decompose the high-level goal into sequential stages
+            print(f"{CYAN}Decomposing high-level goal into sequential stages...{RESET}")
+            stages = await self._decompose_goal(query)
+            print(f"{GREEN}Decomposed into {len(stages)} stages:{RESET}")
+            for idx, stage in enumerate(stages):
+                print(f"  {idx+1}. {stage}")
 
-        return result
+        # Initialize global tracking variables across all stages
+        global_action_history = []
+        global_step_count = 0
+        global_llm_calls_made = 0
+        trace_step_index = 0
+
+        # Execute each stage sequentially
+        for idx, stage_query in enumerate(stages):
+            print(f"\n{MAGENTA}===================================================={RESET}")
+            print(f"{MAGENTA}[Stage {idx+1}/{len(stages)}] Starting: {stage_query}{RESET}")
+            print(f"{MAGENTA}===================================================={RESET}")
+
+            # Get fresh snapshot to compile the goal for this stage
+            snapshot = self.bridge.graph.snapshot()
+            try:
+                import inspect
+                sig = inspect.signature(self.bridge.llm_adapter.compile_goal)
+                if "original_query" in sig.parameters:
+                    goal = await self.bridge.llm_adapter.compile_goal(stage_query, snapshot, original_query=query)
+                else:
+                    goal = await self.bridge.llm_adapter.compile_goal(stage_query, snapshot)
+
+                print(f"{GREEN}Successfully compiled sub-goal for stage {idx+1}!{RESET}")
+                print(f"  Description: {goal.description}")
+                print(f"  Success Conditions:")
+                for cond in goal.success_conditions:
+                    print(f"    - {cond.target} {cond.operator} {cond.value}")
+            except Exception as e:
+                print(f"{RED}Failed to compile goal for stage {idx+1}: {e}{RESET}")
+                return {"status": "failed", "error": f"Failed to compile stage {idx+1}: {e}"}
+
+            goal.max_steps = self.max_steps
+
+            # Build state for the stage, carrying over historical values
+            live_values = self._get_values_dict()
+            state: AgentState = {
+                "query": stage_query,
+                "goal": goal,
+                "registry": snapshot,
+                "values": live_values,
+                "commands": [],
+                "action_history": global_action_history,
+                "consecutive_ineffective_count": 0,
+                "step_count": global_step_count,
+                "status": "init",
+                "error": None,
+                "active_trace": active_trace,
+                "trace_step_index": trace_step_index,
+                "initial_values": live_values,
+                "llm_calls_made": global_llm_calls_made
+            }
+
+            # Check if this stage's success conditions are already met before starting
+            success_met = True
+            for cond in goal.success_conditions:
+                if not cond.evaluate(self.bridge.graph):
+                    success_met = False
+                    break
+            if goal.success_conditions and success_met:
+                print(f"\n{GREEN}[Success] Stage {idx+1} already accomplished before start!{RESET}")
+                continue
+
+            # Run the workflow for this stage
+            result = await self.graph.ainvoke(state, config={"recursion_limit": 100})
+
+            # Update global tracking variables
+            global_action_history = result.get("action_history", [])
+            global_step_count = result.get("step_count", 0)
+            global_llm_calls_made = result.get("llm_calls_made", 0)
+            active_trace = result.get("active_trace")
+            trace_step_index = result.get("trace_step_index", 0)
+
+            # Verify if this stage's success conditions are satisfied
+            success_met = True
+            for cond in goal.success_conditions:
+                if not cond.evaluate(self.bridge.graph):
+                    success_met = False
+                    break
+
+            if not success_met:
+                print(f"\n{RED}[Failure] Stage {idx+1} failed to satisfy success conditions!{RESET}")
+                if "action_history" in result:
+                    print("Sequence of actions in this stage:")
+                    for action_idx, item in enumerate(result["action_history"]):
+                        print(f"  {action_idx+1}. Command: {json.dumps(item['command'])} | State Changed: {item['state_changed']}")
+                await self.bridge.set_agent_status("failed")
+                return {
+                    "status": "failed",
+                    "error": f"Stage {idx+1} success conditions not met",
+                    "step_count": global_step_count,
+                    "action_history": global_action_history
+                }
+
+            print(f"{GREEN}[Success] Stage {idx+1} accomplished!{RESET}")
+            # Sleep a bit to let any unmounts/mounts settle before starting the next stage
+            await asyncio.sleep(0.5)
+
+        # All stages completed successfully!
+        print(f"\n{GREEN}[Success] All stages completed successfully! Total steps: {global_step_count}{RESET}")
+        await self.bridge.set_agent_status("succeeded")
+
+        # Handle Golden Trace recording
+        try:
+            from react_agent_bridge.discovery.traces import GoldenTraceStore
+            store = GoldenTraceStore(self.db_path)
+            if active_trace:
+                store.update_trace_confidence(active_trace.trace_id, succeeded=True)
+            else:
+                valid_steps = [h for h in global_action_history if not h.get("blocked")]
+                if valid_steps:
+                    import uuid
+                    import hashlib
+                    from react_agent_bridge.discovery.traces import GoldenTrace, GoldenTraceStep
+                    
+                    steps = []
+                    for h in valid_steps:
+                        cmd = h["command"]
+                        steps.append(GoldenTraceStep(
+                            command_type=cmd["type"],
+                            target=cmd["target"],
+                            value=cmd.get("value"),
+                            event=cmd.get("event"),
+                            selector=cmd.get("payload"),
+                            args=cmd.get("args"),
+                            pre_state_snapshot=h.get("pre_state", {}),
+                            post_state_snapshot=h.get("post_state", {}),
+                            settle_time_ms=h.get("settle_time_ms", 0.0)
+                        ))
+                    
+                    mounted = self.bridge.graph.get_mounted_components()
+                    names = sorted([c.display_name for c in mounted])
+                    app_version_hash = hashlib.md5(json.dumps(names).encode("utf-8")).hexdigest()[:16]
+
+                    sig = self._compute_goal_signature(goal)
+                    
+                    full_trace = GoldenTrace(
+                        trace_id=str(uuid.uuid4()),
+                        workflow_name=goal.description,
+                        goal_description=query,
+                        recorded_at=time.time(),
+                        application_version_hash=app_version_hash,
+                        precondition_state=global_action_history[0]["pre_state"] if global_action_history else {},
+                        steps=steps,
+                        postcondition_state=self._get_values_dict(),
+                        execution_time_ms=0.0,
+                        llm_calls_made=global_llm_calls_made,
+                        confidence=1.0,
+                        structural_signature=sig
+                    )
+                    store.record_trace(full_trace)
+                    print(f"{GREEN}[Trace Replay] Successfully recorded new golden trace (ID: {full_trace.trace_id}){RESET}")
+        except Exception as e:
+            logger.error(f"Failed to record/update trace: {e}", exc_info=True)
+
+        return {
+            "status": "executed",
+            "step_count": global_step_count,
+            "action_history": global_action_history,
+            "llm_calls_made": global_llm_calls_made
+        }

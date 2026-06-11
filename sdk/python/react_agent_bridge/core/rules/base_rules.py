@@ -9,11 +9,8 @@ def target_mounted_rule(command: dict, graph: ApplicationStateGraph) -> Optional
     if not target:
         return None
 
-    # setState and queryState target format is ComponentId.slotKey
-    if command.get("type") in ["setState", "queryState"]:
-        comp_id = target.rsplit(".", 1)[0] if "." in target else target
-    else:
-        comp_id = target
+    # Target format is ComponentId.slotKey or ComponentId.actionName if dot is present
+    comp_id = target.rsplit(".", 1)[0] if "." in target else target
 
     if comp_id not in graph.components:
         return RuleViolation(

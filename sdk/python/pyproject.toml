@@ -20,3 +20,7 @@ dependencies = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["react_agent_bridge*"]
+
+[project.scripts]
+react-agent-bridge = "react_agent_bridge.cli:main"
+
