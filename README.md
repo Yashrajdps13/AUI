@@ -55,23 +55,9 @@ graph LR
 
 ## 🚀 Installation & Local Development
 
-Compatible with React 18+, Vite, webpack 5, and Create React App. Next.js support is in active development.
+Compatible with React 18+, Vite, webpack 5, and Create React App. Next.js App Router support coming soon.
 
-### Quick Install
-This is the path for developers adopting the library in their own project.
-
-```bash
-# Install via local path (not yet published on npm)
-npm install /path/to/react-agent-bridge
-```
-
-```bash
-# Install via local path (not yet published on pip)
-pip install /path/to/react-agent-bridge/sdk/python
-```
-
-### Local Development
-This is the path for developers working from the repository source.
+Clone this repository to get started.
 
 ### 1. Build and Link the Core Package
 In the root directory of this repository, run:
