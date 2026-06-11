@@ -669,3 +669,156 @@ async def test_plan_node_json_repair_reconstruction():
         assert res2["commands"][0]["type"] == "dispatchEvent"
         assert res2["commands"][0]["payload"] == "#link-project-proj-1"
 
+
+@pytest.mark.asyncio
+async def test_runner_system_prompt_rule_12():
+    from react_agent_bridge.core.client import ReactAgentBridge
+    from react_agent_bridge.core.planner.runner import AgentRunner
+    from react_agent_bridge.core.planner.goal import Goal
+    from unittest.mock import patch, MagicMock
+
+    bridge = ReactAgentBridge(host="localhost", port=8000)
+    runner = AgentRunner(bridge, model="mock-model")
+
+    state = {
+        "query": "Click button",
+        "goal": Goal(description="Click button", success_conditions=[]),
+        "registry": {},
+        "values": {},
+        "commands": [],
+        "action_history": [],
+        "consecutive_ineffective_count": 0,
+        "step_count": 0,
+        "active_trace": None,
+        "trace_step_index": 0,
+        "llm_calls_made": 0
+    }
+
+    mock_res = MagicMock()
+    mock_res.choices = [MagicMock(message=MagicMock(content='[]'))]
+
+    with patch("litellm.completion", return_value=mock_res) as mock_completion:
+        runner._plan_node(state)
+        assert mock_completion.called
+        kwargs = mock_completion.call_args[1]
+        messages = kwargs["messages"]
+        system_msg = next(msg["content"] for msg in messages if msg["role"] == "system")
+        assert "Rule 12" in system_msg or "12. Do NOT invoke store actions" in system_msg
+
+
+def test_goal_condition_nested_resolution():
+    from react_agent_bridge.core.planner.goal import GoalCondition
+    from react_agent_bridge.core.graph.state_graph import ApplicationStateGraph
+    from react_agent_bridge.core.models import SerializedComponentEntry, RegistryDeltaMessage, SerializedStateSlot
+
+    graph = ApplicationStateGraph()
+    slot = SerializedStateSlot(key="projects", hookIndex=0)
+    comp = SerializedComponentEntry(
+        id="Store#1",
+        displayName="Store",
+        mountedAt=100,
+        route="/",
+        stateSlots=[slot]
+    )
+    graph.apply_delta(RegistryDeltaMessage(added=[comp], removed=[], updated=[]))
+    
+    projects_val = [
+        {
+            "id": "proj-1",
+            "name": "Nebula Core",
+            "tasks": [
+                {"id": "t-1", "assignee": "Alice"},
+                {"id": "t-2", "assignee": "Bob"}
+            ]
+        }
+    ]
+    graph.update_state_value("Store#1.projects", projects_val)
+
+    # Test nested path resolution
+    cond1 = GoalCondition(target="Store#1.projects[0].tasks[1].assignee", operator="equals", value="Bob")
+    assert cond1.evaluate(graph) is True
+
+    cond2 = GoalCondition(target="Store#1.projects[0].tasks[0].assignee", operator="equals", value="Alice")
+    assert cond2.evaluate(graph) is True
+
+    cond3 = GoalCondition(target="Store#1.projects[0].tasks[1].assignee", operator="equals", value="Charlie")
+    assert cond3.evaluate(graph) is False
+
+
+def test_goal_condition_virtual_slots():
+    from react_agent_bridge.core.planner.goal import GoalCondition
+    from react_agent_bridge.core.graph.state_graph import ApplicationStateGraph
+    from react_agent_bridge.core.models import SerializedComponentEntry, RegistryDeltaMessage
+
+    graph = ApplicationStateGraph()
+    comp = SerializedComponentEntry(
+        id="ProjectDetailView#r13",
+        displayName="ProjectDetailView",
+        mountedAt=100,
+        route="/project/proj-123",
+        stateSlots=[]
+    )
+    graph.apply_delta(RegistryDeltaMessage(added=[comp], removed=[], updated=[]))
+
+    # isMounted virtual slot
+    cond_mounted = GoalCondition(target="ProjectDetailView#r13.isMounted", operator="equals", value=True)
+    assert cond_mounted.evaluate(graph) is True
+
+    cond_unmounted = GoalCondition(target="LoginView#r5.isMounted", operator="equals", value=False)
+    assert cond_unmounted.evaluate(graph) is True
+
+    # route virtual slot
+    cond_route = GoalCondition(target="ProjectDetailView#r13.route", operator="equals", value="/project/proj-123")
+    assert cond_route.evaluate(graph) is True
+
+    cond_route_miss = GoalCondition(target="ProjectDetailView#r13.route", operator="equals", value="/dashboard")
+    assert cond_route_miss.evaluate(graph) is False
+
+
+@pytest.mark.asyncio
+async def test_compile_goal_target_validation():
+    from react_agent_bridge.core.llm import LiteLLMAdapter
+    from unittest.mock import patch, MagicMock
+    import json
+
+    adapter = LiteLLMAdapter(model="mock-model")
+
+    registry_snapshot = {
+        "components": {
+            "DashboardView#r9": {
+                "displayName": "DashboardView",
+                "stateSlots": {
+                    "newProjectName": ""
+                }
+            }
+        }
+    }
+
+    # Attempt 1: Output contains invalid/hallucinated target (ZustandStore#AuthStore.projects.tasks[0].assignee)
+    # Output must fail validation and trigger retry feedback
+    mock_res_invalid = MagicMock()
+    mock_res_invalid.choices = [MagicMock(message=MagicMock(content=json.dumps({
+        "description": "Fail",
+        "success_conditions": [
+            {"target": "ZustandStore#AuthStore.projects.tasks[0].assignee", "operator": "equals", "value": "Developer"}
+        ]
+    })))]
+
+    # Attempt 2: Corrects to allowed/virtual slot target
+    mock_res_valid = MagicMock()
+    mock_res_valid.choices = [MagicMock(message=MagicMock(content=json.dumps({
+        "description": "Success",
+        "success_conditions": [
+            {"target": "ProjectDetailView.isMounted", "operator": "equals", "value": True}
+        ]
+    })))]
+
+    with patch("litellm.acompletion", side_effect=[mock_res_invalid, mock_res_valid]) as mock_completion:
+        goal = await adapter.compile_goal("Open board", registry_snapshot)
+        assert mock_completion.call_count == 2
+        assert goal.description == "Success"
+        assert len(goal.success_conditions) == 1
+        assert goal.success_conditions[0].target == "ProjectDetailView.isMounted"
+
+
+
