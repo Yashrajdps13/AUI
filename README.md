@@ -55,7 +55,7 @@ graph LR
 
 ## 🚀 Installation & Local Development
 
-This package is currently in active development. To use and test it in your local React application:
+To use and test it in your local React application:
 
 ### 1. Build and Link the Core Package
 In the root directory of this repository, run:
