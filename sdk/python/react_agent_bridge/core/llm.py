@@ -246,9 +246,10 @@ Output strictly valid JSON only. Do not wrap in markdown blocks or include expla
         }}
         
         CRITICAL RULES FOR GOAL COMPILATION:
-        1. For success_conditions and failure_conditions, the "target" field MUST be chosen strictly from the "Allowed Target State Slots" list. Do NOT guess, invent, or use any target path that is not present in that list.
-        2. You MUST use the exact strings from "Allowed Target State Slots" as the target in your conditions. For example, if the list contains "App#r9.attendeeName", use exactly "App#r9.attendeeName", NOT "App.attendeeName" or "PassesStore.pass_holder_name".
-        3. If the user query explicitly mentions inputs, credentials, or values (e.g. "John Doe" or "john@test.com" or card "5555666677778888"), you MUST include success conditions verifying that the corresponding component UI state slots from the allowed list are updated to those expected values, in addition to the final outcome condition.
+        1. NEVER USE ERROR STATE SLOTS (such as target names ending with '.error' or containing 'error', e.g. 'LoginView.error' or 'LoginView#r5.error' being empty/null) OR DEBUG/CONSOLE LOGS (such as 'consoleLogs', 'appLog', 'logs') AS SUCCESS CONDITIONS. The absence of an error state or a log change is NOT a success signal and MUST be rejected. Instead, look for a positive outcome state in Zustand global stores or primary state slots (such as 'AuthStore.isAuthenticated' being true, or 'AuthStore.isLoggedIn' being true, or user details populated).
+        2. For success_conditions and failure_conditions, the "target" field MUST be chosen strictly from the "Allowed Target State Slots" list. Do NOT guess, invent, or use any target path that is not present in that list.
+        3. You MUST use the exact strings from "Allowed Target State Slots" as the target in your conditions. For example, if the list contains "App#r9.attendeeName", use exactly "App#r9.attendeeName", NOT "App.attendeeName" or "PassesStore.pass_holder_name".
+        4. Do NOT include temporary input values or intermediate form fields (such as login password, search query, or form inputs) in the success_conditions if the user moves beyond that step or if the form/component unmounts or is reset. Instead, focus success conditions on final persistent state outcomes (e.g. user being authenticated in the AuthStore/Layout component, project list including the new project, task marked complete). Only include input values in success conditions if the goal is explicitly just to type a value and verify it remains visible on the current un-navigated screen.
         
         CRITICAL RULES FOR FAILURE CONDITIONS:
         1. Failure conditions are evaluated at every single step, INCLUDING step 0 (before the agent has executed any actions).
@@ -259,74 +260,100 @@ Output strictly valid JSON only. Do not wrap in markdown blocks or include expla
         Output strictly valid JSON only. Do not wrap in markdown blocks.
         """
 
-        try:
-            kwargs = {
-                "model": self.model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "You are a structured compiler. Translate natural language queries into valid Goal JSON matching the schema."
-                    },
-                    {"role": "user", "content": prompt}
-                ],
-                "temperature": 0.0
-            }
-            if "ollama" not in self.model.lower():
-                kwargs["response_format"] = {"type": "json_object"}
+        import re
+        from react_agent_bridge.core.planner.goal import GoalCondition
 
-            response = await acompletion(**kwargs)
+        max_attempts = 3
+        current_attempt = 1
+        system_prompt = "You are a structured compiler. Translate natural language queries into valid Goal JSON matching the schema."
+        user_prompt = prompt
 
-            import re
-            raw_content = response.choices[0].message.content
-            if not raw_content:
-                raise LLMError("Model returned an empty response.")
+        while current_attempt <= max_attempts:
+            try:
+                kwargs = {
+                    "model": self.model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    "temperature": 0.0
+                }
+                if "ollama" not in self.model.lower():
+                    kwargs["response_format"] = {"type": "json_object"}
 
-            content = raw_content.strip()
-            # 1. Try to extract JSON from ```json ... ``` block
-            match_json = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL)
-            if match_json:
-                content = match_json.group(1).strip()
-            else:
-                # 2. Try to extract JSON from generic ``` ... ``` block
-                match_block = re.search(r"```\s*(.*?)\s*```", content, re.DOTALL)
-                if match_block:
-                    content = match_block.group(1).strip()
+                response = await acompletion(**kwargs)
+                raw_content = response.choices[0].message.content
+                if not raw_content:
+                    raise LLMError("Model returned an empty response.")
+
+                content = raw_content.strip()
+                # 1. Try to extract JSON from ```json ... ``` block
+                match_json = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL)
+                if match_json:
+                    content = match_json.group(1).strip()
                 else:
-                    # 3. Fallback: extract substring between the first '{' and last '}'
-                    start = content.find("{")
-                    end = content.rfind("}")
-                    if start != -1 and end != -1 and end > start:
-                        content = content[start:end+1].strip()
+                    # 2. Try to extract JSON from generic ``` ... ``` block
+                    match_block = re.search(r"```\s*(.*?)\s*```", content, re.DOTALL)
+                    if match_block:
+                        content = match_block.group(1).strip()
+                    else:
+                        # 3. Fallback: extract substring between the first '{' and last '}'
+                        start = content.find("{")
+                        end = content.rfind("}")
+                        if start != -1 and end != -1 and end > start:
+                            content = content[start:end+1].strip()
 
-            parsed = json.loads(content)
-            
-            # Map JSON to Goal object
-            from react_agent_bridge.core.planner.goal import GoalCondition
-            
-            success_conds = []
-            for cond in parsed.get("success_conditions", []):
-                success_conds.append(GoalCondition(
-                    target=cond["target"],
-                    operator=cond["operator"],
-                    value=cond.get("value")
-                ))
+                parsed = json.loads(content)
                 
-            failure_conds = []
-            for cond in parsed.get("failure_conditions", []):
-                failure_conds.append(GoalCondition(
-                    target=cond["target"],
-                    operator=cond["operator"],
-                    value=cond.get("value")
-                ))
-                
-            return Goal(
-                description=parsed.get("description", query),
-                success_conditions=success_conds,
-                failure_conditions=failure_conds,
-                max_steps=parsed.get("max_steps", 15),
-                timeout_seconds=parsed.get("timeout_seconds", 60.0)
-            )
+                success_conds = []
+                invalid_targets = []
+                for cond in parsed.get("success_conditions", []):
+                    t = cond["target"]
+                    t_lower = t.lower()
+                    if any(x in t_lower for x in ["error", "consolelogs", "applog", "logs"]):
+                        invalid_targets.append(t)
+                    else:
+                        success_conds.append(GoalCondition(
+                            target=t,
+                            operator=cond["operator"],
+                            value=cond.get("value")
+                        ))
 
-        except Exception as e:
-            logger.error(f"LiteLLM compile_goal failed: {e}", exc_info=True)
-            raise LLMError(f"LiteLLM failed to compile goal: {e}")
+                if invalid_targets:
+                    feedback_msg = f"Your compiled goal included invalid targets for success conditions: {invalid_targets}. " \
+                                   f"CRITICAL RULE: You MUST NOT use error state slots or console/debug logs as success conditions. " \
+                                   f"Please choose a positive outcome state target strictly from: {json.dumps(allowed_targets)}."
+                    logger.warning(f"compile_goal attempt {current_attempt} failed: invalid targets {invalid_targets}. Retrying...")
+                    user_prompt = f"{prompt}\n\n[Correction Feedback from previous attempt]:\n{feedback_msg}"
+                    current_attempt += 1
+                    continue
+
+                if not success_conds:
+                    feedback_msg = "Your compiled goal contains no success conditions. You must provide at least one success condition targeting a positive outcome state."
+                    logger.warning(f"compile_goal attempt {current_attempt} failed: no success conditions. Retrying...")
+                    user_prompt = f"{prompt}\n\n[Correction Feedback from previous attempt]:\n{feedback_msg}"
+                    current_attempt += 1
+                    continue
+
+                failure_conds = []
+                for cond in parsed.get("failure_conditions", []):
+                    failure_conds.append(GoalCondition(
+                        target=cond["target"],
+                        operator=cond["operator"],
+                        value=cond.get("value")
+                    ))
+                    
+                return Goal(
+                    description=parsed.get("description", query),
+                    success_conditions=success_conds,
+                    failure_conditions=failure_conds,
+                    max_steps=parsed.get("max_steps", 15),
+                    timeout_seconds=parsed.get("timeout_seconds", 60.0)
+                )
+
+            except Exception as e:
+                if current_attempt == max_attempts:
+                    logger.error(f"LiteLLM compile_goal failed after {max_attempts} attempts: {e}", exc_info=True)
+                    raise LLMError(f"LiteLLM failed to compile goal: {e}")
+                logger.warning(f"compile_goal attempt {current_attempt} failed with error: {e}. Retrying...")
+                current_attempt += 1
