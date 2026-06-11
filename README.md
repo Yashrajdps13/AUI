@@ -98,6 +98,55 @@ ReactDOM.createRoot(document.getElementById('root')).render(
 
 ---
 
+## 📝 JSDoc Annotations & Code Comments
+
+`react-agent-bridge` automatically extracts JSDoc block comments (`/** ... */`) preceding `useState` declarations at build-time. This provides the agent/bridge with semantic metadata and enforces security/access policies directly from your source code.
+
+### 1. Supported Annotations
+
+* **`/** @sensitive */`**: Marks a state slot as holding sensitive data (e.g., passwords, card numbers).
+  * *Effect:* The value of this state slot is redacted (masked to `"[REDACTED]"`) before being passed to the agent planner or recorded in trace logs. The agent can write to these fields but cannot read their plain-text values back.
+* **`/** @writeable user */`**: Restricts write access for the state slot to humans only.
+  * *Effect:* Enforces a strict read-only policy for AI agents. Any attempt by the agent to mutate this slot via `setState` will be blocked by the Rules Engine. Useful for calculated values (e.g., total price, completion rates).
+* **Descriptive Comments**: Any comment string within the JSDoc block.
+  * *Effect:* Passed to the agent as description metadata. This gives LLMs semantic context on what a slot represents, preventing hallucination.
+
+### 2. Code Example
+
+```js
+// src/Dashboard.jsx
+import React, { useState } from 'react';
+
+function Dashboard() {
+  /** 
+   * The current user's authentication token
+   * @sensitive 
+   */
+  const [token, setToken] = useState('');
+
+  /** 
+   * Computed success percentage of the current portfolio.
+   * @writeable user 
+   */
+  const [efficiencyRate, setEfficiencyRate] = useState(0);
+
+  /** Name of the project entered in the creation form */
+  const [projectName, setProjectName] = useState('');
+  
+  // ...
+}
+```
+
+### 3. How the Bridge Ingests Metadata
+1. **Babel Transformation**: The custom Babel plugin parses JSDoc comment blocks preceding `useState` hooks and extracts the metadata.
+2. **Registry Mapping**: It binds these descriptions, sensitivity flags, and writeable restrictions directly to the virtual component state slots.
+3. **Prompt Enrichment**: The bridge serves these annotations dynamically to the LLM agent runner during planning so the agent knows:
+   - What the variables mean.
+   - What fields are sensitive (and must be handled securely).
+   - What fields are read-only (and must not be mutated).
+
+---
+
 ## 🛠️ Developer CLI Utility
 
 The `react-agent-bridge` command-line utility provides immediate, zero-friction debugging, inspection, and health checks for any connected React application.
