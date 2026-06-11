@@ -85,3 +85,14 @@ Executing goal: 'increment the counter three times' using model: 'ollama/qwen2.5
 [Success] Goal accomplished!
 ```
 *(In the browser, you will observe the counter value increase by 3.)*
+
+---
+
+## 🧪 Testing the Integrated Tour Script
+
+If you want to run all of these verification phases sequentially in a guided tour environment:
+```bash
+python agent.py
+```
+This script will prompt you step-by-step to click the application, observe state modifications, and run the automated planning goal, demonstrating the complete Redux bridge capabilities.
+
