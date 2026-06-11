@@ -134,25 +134,17 @@ ReactDOM.createRoot(document.getElementById('root')).render(
 
 ### 1. Configure the Babel Plugin
 
-Add the plugin inside your `next.config` file using the experimental `swcPlugins`-compatible Babel option:
+Next.js reads custom Babel plugins from a `babel.config.js` (or `.babelrc`) file at the project root. Create one with `next/babel` as the base preset:
 
 ```js
-// next.config.mjs
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
-
-/** @type {import('next').NextConfig} */
-const nextConfig = {
-  experimental: {
-    forceSwcTransforms: false, // must be false to allow Babel
-  },
-  babel: {
-    plugins: [require.resolve('react-agent-bridge/babel-plugin')],
-  },
+// babel.config.js
+module.exports = {
+  presets: ['next/babel'],
+  plugins: ['react-agent-bridge/babel-plugin'],
 };
-
-export default nextConfig;
 ```
+
+> **Note:** When a `babel.config.js` is present, Next.js automatically switches from SWC to Babel for transpilation. No changes to `next.config` are needed.
 
 ### 2. Connect from a Client Component
 

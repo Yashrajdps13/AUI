@@ -32,6 +32,18 @@ npm run dev
 
 The app starts at http://localhost:3000.
 
+The Babel plugin is configured via [`babel.config.js`](./babel.config.js) using `next/babel` as the base preset:
+
+```js
+// babel.config.js
+module.exports = {
+  presets: ['next/babel'],
+  plugins: ['react-agent-bridge/babel-plugin'],
+};
+```
+
+When `babel.config.js` is present, Next.js automatically switches from SWC to Babel. No changes to `next.config.mjs` are needed.
+
 ## Verify with the CLI
 
 With the app running and `react-agent-bridge` CLI installed:
