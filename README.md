@@ -31,8 +31,8 @@ The result is agentic control that is **10x faster, 100x cheaper, and rock-solid
 
 ```mermaid
 graph LR
-    React["React Application (Browser)<br/>Fiber Scanner & State Registry"] <-->|WebSocket Protocol<br/>(Structured Diffs & Actions)| WS["WebSocket Link"]
-    WS <-->|WebSocket Protocol<br/>(No DOM Interaction)| Agent["Agent Runtime (Python)<br/>Autonomous Goal Planner"]
+    React["React Application (Browser)<br/>• Fiber Scanner & State Registry"] <--> WS["WebSocket Connection<br/>• JSON Diffs & Action Payloads"]
+    WS <--> Agent["Agent Runtime (Python)<br/>• Autonomous Goal Planner (No DOM Access)"]
 ```
 
 *The agent operates entirely on structured application state and semantic actions, eliminating direct DOM scraping or visual pixel processing.*
