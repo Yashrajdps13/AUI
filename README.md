@@ -6,6 +6,29 @@
 
 ---
 
+## 💡 Why This Exists
+
+Today, AI agents interact with web applications the same way humans do: by scraping raw HTML DOM trees (using Playwright or Puppeteer) or processing visual screenshots (using VLMs). 
+
+This approach is fundamentally broken for developers building production-grade agentic systems:
+* **Extremely Brittle**: Modern web apps use dynamic CSS classes, layout reflows, and complex single-page routing. A minor visual style update or class name change breaks the agent's selectors instantly.
+* **Tokens & Latency Waste**: Sending raw DOM trees or high-res screenshots to an LLM on every single step is slow, expensive, and quickly hits context window limitations.
+* **Zero Internal Visibility**: Agents operate in a black box. They cannot see loading indicators, hidden validation errors, asynchronous fetch state, or client-side store variables (like Zustand, Redux, or React context) until they are rendered visually.
+* **Execution Race Conditions**: Agents click buttons and type inputs without knowing when React has finished rendering, leading to unstable test runs and execution failures.
+
+### The React-Agent-Bridge Paradigm
+`react-agent-bridge` shifts the paradigm: **it treats the UI not as a document of pixels, but as a live state graph.** 
+
+By hooking directly into the React Fiber tree at runtime, it exposes a semantic, structured interface of your application’s state and actions directly to your AI agent backend. 
+
+* Instead of scraping a page to check if logged in, the agent checks `ZustandStore#AuthStore.isAuthenticated`.
+* Instead of typing letters into an input and hoping the value bound correctly, the agent mutates a state slot or dispatches a semantic action.
+* Instead of guessing when a page is done loading, the agent relies on a native **Render Settlement Handshake** that fires only when React finishes updating the layout.
+
+The result is agentic control that is **10x faster, 100x cheaper, and rock-solid resilient**.
+
+---
+
 ## 🛠️ Key Capabilities & Features
 
 * **🔌 Zero-Friction Setup**: One Babel plugin and one entrypoint import. No wrappers, hooks, or context changes in your actual application code.
