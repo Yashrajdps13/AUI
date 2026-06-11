@@ -31,20 +31,15 @@ The result is agentic control that is **10x faster, 100x cheaper, and rock-solid
 
 ## 🛠️ Key Capabilities & Features
 
-* **🔌 Zero-Friction Setup**: One Babel plugin and one entrypoint import. No wrappers, hooks, or context changes in your actual application code.
-* **🕵️‍♂️ Passive Discovery Mode & SQLite Session Recorder**: Automatically records human user sessions (clicks, text changes, state transitions) into a local SQLite database (`discovery.db`) to reconstruct high-fidelity workflow pathways.
-* **📈 Outcome-Based Workflow Inference Engine**: Analyzes recorded sessions to discover state slots reaching terminal completion values, cluster temporal slot transitions into step phases, identify step preconditions, and generate developer-reviewable YAML/Markdown workflow definitions (`agent-context.md`).
-* **🤖 Automated Agent Runner & Replay Engine**: Boots an autonomous planner that parses compiled goal states, schedules action sequences using standard LLMs, and falls back to **Golden Trace Replay** to replay parameterized user interactions (clicks, state updates) in under a second with **0 LLM calls**.
-* **📝 JSDoc Annotation Extraction**: Automatically parses developer JSDoc block comments (`/** ... */`) preceding `useState` declarations at build-time to provide semantic descriptions of state slots to the agent.
-* **👁️ Dynamic Element Visibility & Disabled States**: Interactive element scanner detects computed CSS visibility (display, visibility, opacity) and HTML/ARIA disabled properties to prevent agent interactions with hidden or inactive fields.
-* **🤝 Render Settlement Handshakes**: Hooks into React DevTools commits to notify the agent backend when rendering and layout updates have fully settled, eliminating execution race conditions.
-* **🧠 Semantic Registry**: Live, hierarchical registry of active components and state variables.
-* **⚡ State Subscriptions & Diffs**: Real-time push notifications to the agent when watched states change, minimizing websocket chatter.
-* **✍️ Semantic Read & Write**: The agent can read state values and dispatch state mutations securely.
-* **🎯 Host DOM Binding**: Correlates virtual component state slots to their exact browser DOM nodes for high-fidelity click, change, and focus event dispatches.
-* **🚫 Safe Agent Mutation Rules**: Enforces strict page context constraints (preventing mutations of elements not visible in the DOM), blocks form store bypasses when input fields are visible, and excludes direct collection/array state updates to protect data integrity.
-* **🚨 Activity & Error Logging Ledger**: Zero-config runtime error and unhandled promise rejection interceptors stream errors to the agent in real time, accompanied by a circular history buffer ledger of recent console outputs and agent actions.
-* **🎨 Agent Mode UX Connection Indicators**: Exposes a reactive `useIsAgentConnected()` React hook and toggles the `.aui-agent-mode` class on `document.body` for glowing agent connection styling.
+* **🔌 Zero-Friction Setup**: Integrate with a single entry point import and build-time plugin without modifying any of your existing components, hooks, or context layouts.
+* **🕵️‍♂️ Automatic Workflow Capture**: Automatically record human user sessions (clicks, inputs, route changes, and state transitions) in the background to visually capture precise developer/user pathways.
+* **📈 Inferred Workflow Blueprints**: Automatically translate recorded human sessions into structured, developer-editable Markdown manuals detailing preconditions, step sequences, and successful goal outcomes.
+* **🤖 Instant Zero-LLM-Cost Replays**: Replay parameter-mapped user paths (e.g. submitting forms, changing pages) in under a second with zero LLM API call costs by reusing previously completed golden traces.
+* **📝 Clean Semantic Descriptions**: Provide direct context and metadata to your agent by simply writing standard JSDoc comments above state variables, keeping security policies alongside your code.
+* **🤝 Zero Execution Race Conditions**: Guarantee execution stability by ensuring the agent only proceeds to subsequent actions when React rendering and layout updates have fully settled.
+* **🚫 Safety & State Integrity Guarantees**: Restrict write access on sensitive variables, prevent direct mutations of computed/read-only slots, and block interactions with hidden or disabled elements.
+* **🚨 Real-Time Error Interception**: Automatically stream runtime errors, promise rejections, and browser console warnings directly to the agent to debug failures instantly.
+* **🎨 Agent-Aware Styling**: Use a native React hook or automatic body styling to change the app UI dynamically when an agent is active, giving users clear visual indicators of agent activity.
 
 ---
 
