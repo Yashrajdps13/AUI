@@ -1,6 +1,35 @@
 # Redux Toolkit Integration Flow — Example
 
-This example demonstrates how to integrate a standard Redux Toolkit (RTK) global state store with `react-agent-bridge` using the dedicated `bridgeRedux` adapter.
+This example demonstrates how to integrate a standard Redux Toolkit (RTK) global state store with `react-agent-bridge` using the dedicated `bridgeRedux` adapter. 
+
+It showcases how state slices are mapped to read-only slots, how dispatches are safely wrapped to satisfy RTK plain-object constraints, and how LLM planners leverage registry metadata to control global application state.
+
+---
+
+## 🧠 How It Works (Architecture)
+
+The `bridgeRedux` adapter bridges a standard Redux store into the `react-agent-bridge` component state registry:
+
+1. **State Slices to Registry Slots**: Every slice registered in the root reducer (e.g., `counter`, `user`) is exposed as a state slot on a virtual component identifier `ReduxStore#redux`.
+2. **Read-Only Enforcement**: Redux state must only be modified via dispatches. Direct state setter modifications are prohibited. The adapter enforces this by throwing errors on direct writes and setting the slot property `writeable: 'user'`.
+3. **Dispatch Wrapper & Plain-Object Transform**: Redux Toolkit requires all actions passed to `dispatch` to be plain objects. Smaller LLMs and automation scripts prefer simple action name strings. The bridge wraps the native `dispatch` action, automatically converting input strings (e.g., `'counter/increment'`) into correct RTK action objects (e.g., `{ type: 'counter/increment', payload: undefined }`).
+4. **Metadata & Planner Guidance**: Since action types are dynamic, LLM planners cannot automatically guess the names of valid actions accepted by the store. By passing a metadata dictionary to `bridgeRedux`, developers can specify slice descriptions that explicitly guide the LLM on which action strings to use.
+
+```javascript
+// src/store.js
+const metadata = {
+  counter: { description: 'Simple global click counter slice. Dispatched via Redux action string "counter/increment", "counter/decrement", or "counter/incrementByAmount"' },
+  user: { sensitive: false, description: 'User profile details containing developer name. Dispatched via Redux action string "user/setName" with payload' },
+};
+
+export const store = bridgeRedux(
+  configureStore({
+    reducer: { counter: counterSlice.reducer, user: userSlice.reducer }
+  }),
+  metadata,
+  'ReduxStore'
+);
+```
 
 ---
 
@@ -47,9 +76,12 @@ react-agent-bridge registry
 Component: ReduxStore (ReduxStore#redux)
   Route: /
   State Slots:
-    - counter: {"value":0} [Collection]
-    - user: {"name":"Developer"} [Collection]
-  Actions: dispatch
+    - counter: {"value":0} [Collection] [Readonly]
+        Description: Simple global click counter slice. Dispatched via Redux action string "counter/increment", "counter/decrement", or "counter/incrementByAmount"
+    - user: {"name":"Developer"} [Collection] [Readonly]
+        Description: User profile details containing developer name. Dispatched via Redux action string "user/setName" with payload
+  Actions:
+    - dispatch
 ```
 
 ### 2. Live State Watcher
