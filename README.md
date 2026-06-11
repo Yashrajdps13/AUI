@@ -55,7 +55,21 @@ graph LR
 
 ## 🚀 Installation & Local Development
 
-To use and test it in your local React application:
+### Quick Install
+This is the path for developers adopting the library in their own project.
+
+```bash
+npm install react-agent-bridge
+```
+`import 'react-agent-bridge/preflight'; import { AgentWebSocketManager } from 'react-agent-bridge'; AgentWebSocketManager.connect('ws://localhost:8000');`
+
+```bash
+pip install react-agent-bridge
+```
+`from react_agent_bridge.core.client import ReactAgentBridge; bridge = ReactAgentBridge(); await bridge.start()`
+
+### Local Development
+This is the path for developers working from the repository source.
 
 ### 1. Build and Link the Core Package
 In the root directory of this repository, run:
