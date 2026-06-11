@@ -82,7 +82,10 @@ async def main():
     components = bridge.graph.get_mounted_components()
     print("\n================= Active Registry Snapshot =================")
     for comp in components:
-        print(f"\nComponent: {comp.display_name} ({comp.id})")
+        if comp.id in ["__context__#env", "__context__#custom"]:
+            print(f"\nComponent: [context] {comp.display_name} ({comp.id})")
+        else:
+            print(f"\nComponent: {comp.display_name} ({comp.id})")
         print(f"  Route: {comp.route or 'None'}")
         if comp.state_slots:
             print("  State Slots:")

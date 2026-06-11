@@ -15,6 +15,7 @@
       "types": "./dist/preflight.d.ts"
     },
     "./babel-plugin": {
+      "require": "./dist/babel-plugin.cjs",
       "import": "./dist/babel-plugin.js",
       "types": "./dist/babel-plugin.d.ts"
     },

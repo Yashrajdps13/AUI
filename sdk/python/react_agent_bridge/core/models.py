@@ -39,7 +39,7 @@ class AppLogEntry(BaseModel):
 
 
 class CommandAuditEntry(BaseModel):
-    commandId: str
+    commandId: Optional[str] = None
     type: Literal["setState", "dispatchEvent", "callAction"]
     target: str
     value: Any = None

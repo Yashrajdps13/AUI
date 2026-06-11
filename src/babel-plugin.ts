@@ -234,6 +234,37 @@ export default function reactAgentBridgeBabelPlugin(): PluginObj<PluginState> {
               }
             }
           }
+
+          // 3. Next.js App Router: skip Server Components.
+          // Only transform files that begin with a 'use client' directive.
+          // Any file without this directive is a React Server Component — it runs on
+          // the server, has no hooks, and must not be transformed.
+          //
+          // Babel parses top-level string directives (like 'use client' and 'use strict')
+          // into the `programPath.node.directives` array as Directive nodes, NOT as
+          // body[0] ExpressionStatements. We check both paths for full compatibility.
+          const directives = programPath.node.directives ?? [];
+          const hasUseClientDirective =
+            directives.some(
+              (d: any) =>
+                t.isDirective(d) &&
+                t.isDirectiveLiteral(d.value) &&
+                d.value.value === 'use client'
+            );
+
+          // Fallback: some parser configs emit 'use client' as an ExpressionStatement.
+          const firstStatement = programPath.node.body[0];
+          const hasUseClientExpression =
+            firstStatement &&
+            t.isExpressionStatement(firstStatement) &&
+            t.isStringLiteral((firstStatement as any).expression) &&
+            (firstStatement as any).expression.value === 'use client';
+
+          if (!hasUseClientDirective && !hasUseClientExpression) {
+            // No 'use client' — treat as Server Component and make no changes.
+            programPath.skip();
+            return;
+          }
         },
         exit(programPath, state) {
           if (state.transformed) {

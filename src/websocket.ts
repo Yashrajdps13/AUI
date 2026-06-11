@@ -211,6 +211,11 @@ class AgentWebSocketManagerImpl {
    * Connects to the agent backend WebSocket.
    */
   connect(url: string, options?: { writeScope?: WriteSecurityScope }): void {
+    // SSR guard: WebSocket connections are browser-only.
+    // In Next.js App Router, this method may be imported on the server
+    // (e.g. in a Server Component that re-exports it). Do nothing there.
+    if (typeof window === 'undefined') return;
+
     this.url = url;
     this.isDisconnecting = false;
     this.writeScope = options?.writeScope;
@@ -947,6 +952,24 @@ class AgentWebSocketManagerImpl {
       }
 
       case 'setState': {
+        const lastDot = command.target.lastIndexOf('.');
+        const componentId = lastDot !== -1 ? command.target.substring(0, lastDot) : command.target;
+        if (componentId === '__context__#env' || componentId === '__context__#custom' || componentId.startsWith('__context__#')) {
+          AgentLogger.addEntry({
+            type: 'warn',
+            source: 'agent',
+            message: `Blocked setState -> ${command.target}: target is read-only environmental context.`,
+            timestamp: Date.now(),
+          });
+          this.send({
+            type: 'commandAck',
+            commandId: command.commandId,
+            success: false,
+            error: 'Target is read-only environmental context.',
+          });
+          return;
+        }
+
         const securityCheck = this.isWriteAllowed(command.target, 'state');
         if (!securityCheck.allowed) {
           AgentLogger.addEntry({
@@ -974,7 +997,6 @@ class AgentWebSocketManagerImpl {
           return;
         }
 
-        const lastDot = command.target.lastIndexOf('.');
         if (lastDot === -1) {
           const err = 'Invalid target path format. Expected "componentId.stateKey".';
           const redactedVal = this.getRedactedValue(command.target, 'setState', command.value);
@@ -996,7 +1018,6 @@ class AgentWebSocketManagerImpl {
           return;
         }
 
-        const componentId = command.target.substring(0, lastDot);
         const stateKey = command.target.substring(lastDot + 1);
 
         const entry = registry.get(componentId);
@@ -1067,6 +1088,22 @@ class AgentWebSocketManagerImpl {
       }
 
       case 'dispatchEvent': {
+        if (command.target === '__context__#env' || command.target === '__context__#custom' || command.target.startsWith('__context__#')) {
+          AgentLogger.addEntry({
+            type: 'warn',
+            source: 'agent',
+            message: `Blocked dispatchEvent -> ${command.event} on ${command.target}: target is read-only environmental context.`,
+            timestamp: Date.now(),
+          });
+          this.send({
+            type: 'commandAck',
+            commandId: command.commandId,
+            success: false,
+            error: 'Target is read-only environmental context.',
+          });
+          return;
+        }
+
         const securityCheck = this.isWriteAllowed(command.target, 'event');
         if (!securityCheck.allowed) {
           AgentLogger.addEntry({
@@ -1104,7 +1141,79 @@ class AgentWebSocketManagerImpl {
         });
 
         const entry = registry.get(command.target);
-        if (!entry || !entry.domRef) {
+        if (!entry) {
+
+          const errMsg = `Component "${command.target}" not found in registry.`;
+          CommandAuditLogger.addEntry({
+            commandId: command.commandId,
+            type: 'dispatchEvent',
+            target: `${command.target}.${command.event}`,
+            value: redactedVal,
+            success: false,
+            error: errMsg,
+            timestamp: Date.now(),
+          });
+          this.send({
+            type: 'commandAck',
+            commandId: command.commandId,
+            success: false,
+            error: errMsg,
+          });
+          return;
+        }
+
+        // Resolve the component's root DOM element.
+        // Primary: use the pre-resolved domRef from the fiber scanner.
+        // Fallback: for environments like Next.js App Router where fiber-based
+        //   DOM resolution may fail due to RSC boundaries, attempt to resolve
+        //   the target element directly from the document.
+        let resolvedDom: HTMLElement | null = entry.domRef ?? null;
+        if (!resolvedDom) {
+
+          // Try to find the specific element directly in the document (fallback for Next.js)
+          if (command.payload && typeof command.payload === 'string' && typeof document !== 'undefined') {
+            try {
+              const directEl = document.querySelector(command.payload);
+              if (directEl instanceof HTMLElement) {
+                // Log that we used the fallback
+                AgentLogger.addEntry({
+                  type: 'warn',
+                  source: 'agent',
+                  message: `dispatchEvent: domRef for "${command.target}" was null; resolved selector "${command.payload}" directly from document.`,
+                  timestamp: Date.now(),
+                });
+                // Dispatch the event directly on the found element and short-circuit
+                try {
+                  directEl.click();
+                  CommandAuditLogger.addEntry({
+                    commandId: command.commandId,
+                    type: 'dispatchEvent',
+                    target: `${command.target}.${command.event}`,
+                    value: redactedVal,
+                    success: true,
+                    timestamp: Date.now(),
+                  });
+                  this.send({ type: 'commandAck', commandId: command.commandId, success: true });
+                } catch (clickErr: any) {
+                  const errMsg = `Failed to dispatch event (document fallback): ${clickErr.message || clickErr}`;
+                  CommandAuditLogger.addEntry({
+                    commandId: command.commandId,
+                    type: 'dispatchEvent',
+                    target: `${command.target}.${command.event}`,
+                    value: redactedVal,
+                    success: false,
+                    error: errMsg,
+                    timestamp: Date.now(),
+                  });
+                  this.send({ type: 'commandAck', commandId: command.commandId, success: false, error: errMsg });
+                }
+                break;
+              }
+            } catch {
+              // querySelector failed, fall through to error
+            }
+          }
+          // Could not resolve any DOM reference
           const errMsg = `Component DOM reference for "${command.target}" not found.`;
           CommandAuditLogger.addEntry({
             commandId: command.commandId,
@@ -1124,8 +1233,9 @@ class AgentWebSocketManagerImpl {
           return;
         }
 
+
         try {
-          const dom = entry.domRef;
+          const dom = resolvedDom!
           if (command.event === 'click') {
             let targetDom = dom;
             if (command.payload && typeof command.payload === 'string') {
@@ -1241,6 +1351,24 @@ class AgentWebSocketManagerImpl {
       }
 
       case 'callAction': {
+        const actionLastDot = command.target.lastIndexOf('.');
+        const actionComponentId = actionLastDot !== -1 ? command.target.substring(0, actionLastDot) : command.target;
+        if (actionComponentId === '__context__#env' || actionComponentId === '__context__#custom' || actionComponentId.startsWith('__context__#')) {
+          AgentLogger.addEntry({
+            type: 'warn',
+            source: 'agent',
+            message: `Blocked callAction -> ${command.target}: target is read-only environmental context.`,
+            timestamp: Date.now(),
+          });
+          this.send({
+            type: 'commandAck',
+            commandId: command.commandId,
+            success: false,
+            error: 'Target is read-only environmental context.',
+          });
+          return;
+        }
+
         const securityCheck = this.isWriteAllowed(command.target, 'action');
         if (!securityCheck.allowed) {
           AgentLogger.addEntry({

@@ -128,8 +128,67 @@ ReactDOM.createRoot(document.getElementById('root')).render(
 
 ---
 
-## 📝 JSDoc Annotations & Code Comments
+## ⚛️ Next.js App Router
 
+`react-agent-bridge` fully supports the Next.js App Router. Because the Babel plugin detects the `'use client'` directive, it is automatically skipped on every Server Component — only Client Components are instrumented.
+
+### 1. Configure the Babel Plugin
+
+Next.js reads custom Babel plugins from a `babel.config.js` (or `.babelrc`) file at the project root. Create one with `next/babel` as the base preset:
+
+```js
+// babel.config.js
+module.exports = {
+  presets: ['next/babel'],
+  plugins: ['react-agent-bridge/babel-plugin'],
+};
+```
+
+> **Note:** When a `babel.config.js` is present, Next.js automatically switches from SWC to Babel for transpilation. No changes to `next.config` are needed.
+
+### 2. Connect from a Client Component
+
+`AgentWebSocketManager.connect()` uses the browser `WebSocket` API and **must only be called from a Client Component**. The recommended pattern is a dedicated `providers.tsx` file that wraps your application:
+
+```tsx
+// app/providers.tsx
+'use client';
+
+import { useEffect } from 'react';
+import { AgentWebSocketManager } from 'react-agent-bridge';
+
+export function Providers({ children }: { children: React.ReactNode }) {
+  useEffect(() => {
+    AgentWebSocketManager.connect('ws://localhost:8000');
+    return () => AgentWebSocketManager.disconnect();
+  }, []);
+
+  return <>{children}</>;
+}
+```
+
+Then import and use `Providers` from your root layout:
+
+```tsx
+// app/layout.tsx
+import { Providers } from './providers';
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en">
+      <body>
+        <Providers>{children}</Providers>
+      </body>
+    </html>
+  );
+}
+```
+
+Any component in your app that needs agent visibility only needs `'use client'` at the top and a standard `useState` call — the Babel plugin handles the rest automatically.
+
+---
+
+## 📝 JSDoc Annotations & Code Comments
 `react-agent-bridge` automatically extracts JSDoc block comments (`/** ... */`) preceding `useState` declarations at build-time. This provides the agent/bridge with semantic metadata and enforces security/access policies directly from your source code.
 
 ### 1. Supported Annotations
@@ -282,6 +341,7 @@ The AUI repository includes a comprehensive set of test apps and guided agent fl
 | **[discovery-flow](examples/discovery-flow)** | Multi-step ticket registration flow demonstrating SQLite session logging, outcome step clustering, sequencing constraint inference, and Golden Trace replay. | `cd examples/discovery-flow` <br> `npm run dev` | `cd examples/discovery-flow` <br> `python agent.py` |
 | **[zustand-flow](examples/zustand-flow)** | Bridges Zustand global store, demonstrates component-less bindings and direct array mutation validation. | `cd examples/zustand-flow/frontend` <br> `npm run dev` | `cd examples/zustand-flow/agent` <br> `python agent.py` |
 | **[redux-flow](examples/redux-flow)** | Bridges Redux Toolkit global store slices, enforces read-only state rules, wraps dispatches to plain objects, and injects slice metadata for LLM planning guidance. | `cd examples/redux-flow` <br> `npm run dev` | *Explore using the CLI utility* (e.g. `react-agent-bridge registry`) |
+| **[nextjs-flow](examples/nextjs-flow)** | Next.js 14 App Router integration. Shows `'use client'` component instrumentation, `providers.tsx` connection pattern, and Server Component isolation (Server Components are never instrumented). | `cd examples/nextjs-flow` <br> `npm run dev` | *Explore using the CLI utility* (e.g. `react-agent-bridge registry`) |
 | **[wait-for-flow](examples/wait-for-flow)** | Focuses on asynchronous mounting and state settlement delay verification. | `cd examples/wait-for-flow` <br> `npm run dev` | *Explore using the CLI utility* (e.g. `react-agent-bridge run`) |
 | **[security-flow](examples/security-flow)** | Focuses on sensitive password field masking and read-only slot protection tests. | `cd examples/security-flow` <br> `npm run dev` | *Explore using the CLI utility* (e.g. `react-agent-bridge registry`) |
 | **[routing-flow](examples/routing-flow)** | Verifies page route transitions and virtual slot condition checking. | `cd examples/routing-flow` <br> `npm run dev` | *Explore using the CLI utility* |

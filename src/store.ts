@@ -146,6 +146,7 @@ class BridgeStoreImpl {
    * component ID, the component entry itself is removed from the registry.
    */
   unregisterStateSlot(id: string, hookIndex: number): void {
+    if (id === '__context__#env' || id === '__context__#custom') return;
     const activeHooks = this.refCounts.get(id);
     if (!activeHooks) return;
 
@@ -192,6 +193,7 @@ class BridgeStoreImpl {
    * Removes a component entry by ID.
    */
   unregisterComponent(id: string): void {
+    if (id === '__context__#env' || id === '__context__#custom') return;
     if (!this.registry.has(id)) return;
     const nextRegistry = new Map(this.registry);
     nextRegistry.delete(id);

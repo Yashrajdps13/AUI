@@ -109,9 +109,13 @@ class ReactAgentBridge(CommandDispatcher):
     async def _handle_connection(self, websocket):
         """Handles the lifecycle of a single incoming React client connection."""
         if self.connection:
-            logger.warning("Rejecting secondary bridge connection. Only one client is supported at a time.")
-            await websocket.close(code=4000, reason="Only one client supported.")
-            return
+            logger.warning("Replacing existing bridge connection with new client connection.")
+            old_conn = self.connection
+            self.connection = websocket
+            try:
+                await old_conn.close(code=4001, reason="Superceded by new connection.")
+            except Exception:
+                pass
 
         self.connection = websocket
         logger.info("React client connected successfully.")
@@ -122,8 +126,9 @@ class ReactAgentBridge(CommandDispatcher):
             await self._send({"type": "getRegistry", "commandId": "initial-sync"})
         except Exception as e:
             logger.error(f"Failed to send initial registry sync request: {e}")
-            self.connection = None
-            self._trigger_event("disconnect")
+            if self.connection is websocket:
+                self.connection = None
+                self._trigger_event("disconnect")
             return
 
         try:
@@ -138,10 +143,11 @@ class ReactAgentBridge(CommandDispatcher):
         except Exception as e:
             logger.error(f"React client connection dropped with error: {e}")
         finally:
-            self.connection = None
-            self.futures_manager.reject_all("WebSocket connection closed")
-            self.graph.clear()
-            self._trigger_event("disconnect")
+            if self.connection is websocket:
+                self.connection = None
+                self.futures_manager.reject_all("WebSocket connection closed")
+                self.graph.clear()
+                self._trigger_event("disconnect")
 
     async def _route_message(self, data: dict):
         """Routes and parses incoming bridge messages, updating graph and futures."""

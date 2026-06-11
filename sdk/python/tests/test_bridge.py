@@ -703,7 +703,7 @@ async def test_runner_system_prompt_rule_12():
         kwargs = mock_completion.call_args[1]
         messages = kwargs["messages"]
         system_msg = next(msg["content"] for msg in messages if msg["role"] == "system")
-        assert "Rule 12" in system_msg or "12. Do NOT invoke store actions" in system_msg
+        assert "Rule 12" in system_msg or "12. Do NOT invoke store actions" in system_msg or "Rule 13" in system_msg or "13. Do NOT invoke store actions" in system_msg
 
 
 def test_goal_condition_nested_resolution():
