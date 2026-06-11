@@ -402,22 +402,6 @@ Output strictly a JSON array of strings, e.g. ["stage 1", "stage 2"]. Do not add
         allowed_call_str = ("\n".join("  " + t for t in allowed_call_targets)
                             if allowed_call_targets else "  (none — do NOT use callAction)")
 
-        # Detect current UI step and provide specific navigation guidance
-        step_hint_lines = []
-        step_nav_map = {
-            "details":  "Fill attendeeName and email, then click the 'Next Step' button (#btn-details-next).",
-            "options":  "Click the session toggle buttons to select sessions, then click the 'Next Step' button (#btn-options-next).",
-            "payment":  "Fill cardNumber, then click the 'Confirm and Pay' button (#btn-submit-booking) to submit.",
-        }
-        for comp_id in components_info:
-            active_step = live_values.get(f"{comp_id}.activeStep")
-            if active_step and active_step in step_nav_map:
-                step_hint_lines.append(
-                    f"CURRENT STEP: '{active_step}'. Instruction: {step_nav_map[active_step]}"
-                )
-                break
-        step_hint_str = "\n".join(step_hint_lines) if step_hint_lines else ""
-
         history_lines = []
         for h_idx, item in enumerate(state["action_history"]):
             cmd = item["command"]
@@ -489,7 +473,6 @@ GOAL CONDITIONS — ALREADY SATISFIED (do NOT perform any actions to change thes
 GOAL CONDITIONS — STILL NEEDED:
 {unsatisfied_str}
 ---
-{(step_hint_str + chr(10) + '---' + chr(10)) if step_hint_str else ''}
 Your goal is to fulfill the user request by outputting a JSON array of bridge commands.
 Only work on the STILL NEEDED conditions above. DO NOT re-do any ALREADY SATISFIED condition.
 
