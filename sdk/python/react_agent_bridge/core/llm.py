@@ -38,7 +38,7 @@ class BaseLLMAdapter(ABC):
         pass
 
     @abstractmethod
-    async def compile_goal(self, query: str, registry_snapshot: dict) -> Goal:
+    async def compile_goal(self, query: str, registry_snapshot: dict, original_query: Optional[str] = None) -> Goal:
         """
         Translates a natural language query into a structured Goal object.
         """
@@ -184,7 +184,7 @@ Output strictly valid JSON only. Do not wrap in markdown blocks or include expla
             logger.error(f"LiteLLM completion call failed: {e}", exc_info=True)
             raise LLMError(f"LiteLLM call failed: {e}")
 
-    async def compile_goal(self, query: str, registry_snapshot: dict) -> Goal:
+    async def compile_goal(self, query: str, registry_snapshot: dict, original_query: Optional[str] = None) -> Goal:
         try:
             import litellm
             from litellm import acompletion
@@ -213,10 +213,57 @@ Output strictly valid JSON only. Do not wrap in markdown blocks or include expla
                 for slot_key in comp_data["stateSlots"].keys():
                     allowed_targets.append(f"{comp_id}.{slot_key}")
 
+        def get_clean_parts(cid: str) -> set:
+            import re
+            parts = set(re.split(r'[^a-zA-Z0-9]', cid))
+            cleaned = set()
+            for p in parts:
+                if not p:
+                    continue
+                if p.isdigit():
+                    continue
+                if re.match(r'^r\d+$', p, re.IGNORECASE):
+                    continue
+                cleaned.add(p)
+            return cleaned
+
+        def is_valid_target(t_name: str, allowed: List[str]) -> bool:
+            if not allowed:
+                return True
+            if t_name.endswith(".isMounted") or t_name.endswith(".route"):
+                return True
+            if t_name in allowed:
+                return True
+            
+            parts = t_name.split(".", 1)
+            if len(parts) != 2:
+                return False
+            comp_id, path_str = parts
+            
+            import re
+            segments = path_str.split(".")
+            first_segment = segments[0]
+            match_bracket = re.match(r'^([^\[]+)(.*)$', first_segment)
+            slot_key = match_bracket.group(1) if match_bracket else first_segment
+            
+            target_parts = get_clean_parts(comp_id)
+            
+            for a in allowed:
+                a_parts = a.split(".", 1)
+                if len(a_parts) != 2:
+                    continue
+                a_comp_id, a_slot_key = a_parts
+                if slot_key == a_slot_key:
+                    allowed_parts = get_clean_parts(a_comp_id)
+                    if target_parts.intersection(allowed_parts):
+                        return True
+            return False
+
+        original_query_str = f'\n        Original Context Query (for context / resolving pronouns only): "{original_query}"' if original_query else ""
         prompt = f"""
-        Translate the following user natural language query into a structured Goal object with success and failure conditions, based on the current component registry state.
+        Translate the following user natural language query (User Query) into a structured Goal object with success and failure conditions, based on the current component registry state.
         
-        User Query: "{query}"
+        User Query: "{query}"{original_query_str}
         
         Active Registry Snapshot:
         {json.dumps(registry_snapshot, indent=2)}
@@ -250,6 +297,11 @@ Output strictly valid JSON only. Do not wrap in markdown blocks or include expla
         2. For success_conditions and failure_conditions, the "target" field MUST be chosen strictly from the "Allowed Target State Slots" list. Do NOT guess, invent, or use any target path that is not present in that list.
         3. You MUST use the exact strings from "Allowed Target State Slots" as the target in your conditions. For example, if the list contains "App#r9.attendeeName", use exactly "App#r9.attendeeName", NOT "App.attendeeName" or "PassesStore.pass_holder_name".
         4. Do NOT include temporary input values or intermediate form fields (such as login password, search query, or form inputs) in the success_conditions if the user moves beyond that step or if the form/component unmounts or is reset. Instead, focus success conditions on final persistent state outcomes (e.g. user being authenticated in the AuthStore/Layout component, project list including the new project, task marked complete). Only include input values in success conditions if the goal is explicitly just to type a value and verify it remains visible on the current un-navigated screen.
+        5. For navigation, routing, or page-transition goals where a target component/view is not yet mounted (and therefore its slots are missing from the registry snapshot), you MUST use virtual slots to check if the target component is mounted or the route is updated. Virtual slots use the target format:
+           - ComponentName.isMounted: equals true/false (use when the goal is to load/navigate to a component/page)
+           - ComponentName.route: equals "/path/to/route" (use when checking the current route)
+           Example: if navigating to a ProjectDetailView, set target: "ProjectDetailView.isMounted", operator: "equals", value: true.
+        6. You MUST only compile success conditions for the actions described in the "User Query". The "Original Context Query" is provided strictly as background context to help you resolve pronouns (like "its", "that", "this") or references. Do NOT compile success conditions for parts of the "Original Context Query" that are not requested in the "User Query".
         
         CRITICAL RULES FOR FAILURE CONDITIONS:
         1. Failure conditions are evaluated at every single step, INCLUDING step 0 (before the agent has executed any actions).
@@ -306,11 +358,15 @@ Output strictly valid JSON only. Do not wrap in markdown blocks or include expla
                 parsed = json.loads(content)
                 
                 success_conds = []
+                failure_conds = []
                 invalid_targets = []
+                
                 for cond in parsed.get("success_conditions", []):
                     t = cond["target"]
                     t_lower = t.lower()
                     if any(x in t_lower for x in ["error", "consolelogs", "applog", "logs"]):
+                        invalid_targets.append(t)
+                    elif not is_valid_target(t, allowed_targets):
                         invalid_targets.append(t)
                     else:
                         success_conds.append(GoalCondition(
@@ -319,10 +375,23 @@ Output strictly valid JSON only. Do not wrap in markdown blocks or include expla
                             value=cond.get("value")
                         ))
 
+                for cond in parsed.get("failure_conditions", []):
+                    t = cond["target"]
+                    t_lower = t.lower()
+                    if not is_valid_target(t, allowed_targets):
+                        invalid_targets.append(t)
+                    else:
+                        failure_conds.append(GoalCondition(
+                            target=t,
+                            operator=cond["operator"],
+                            value=cond.get("value")
+                        ))
+
                 if invalid_targets:
-                    feedback_msg = f"Your compiled goal included invalid targets for success conditions: {invalid_targets}. " \
-                                   f"CRITICAL RULE: You MUST NOT use error state slots or console/debug logs as success conditions. " \
-                                   f"Please choose a positive outcome state target strictly from: {json.dumps(allowed_targets)}."
+                    feedback_msg = f"Your compiled goal included invalid targets: {invalid_targets}. " \
+                                   f"CRITICAL RULE: You MUST choose targets strictly from the 'Allowed Target State Slots' list, " \
+                                   f"or use virtual slots (e.g. 'ComponentName.isMounted' or 'ComponentName.route') for navigation/routing. " \
+                                   f"No other target names or paths are allowed."
                     logger.warning(f"compile_goal attempt {current_attempt} failed: invalid targets {invalid_targets}. Retrying...")
                     user_prompt = f"{prompt}\n\n[Correction Feedback from previous attempt]:\n{feedback_msg}"
                     current_attempt += 1
@@ -334,14 +403,6 @@ Output strictly valid JSON only. Do not wrap in markdown blocks or include expla
                     user_prompt = f"{prompt}\n\n[Correction Feedback from previous attempt]:\n{feedback_msg}"
                     current_attempt += 1
                     continue
-
-                failure_conds = []
-                for cond in parsed.get("failure_conditions", []):
-                    failure_conds.append(GoalCondition(
-                        target=cond["target"],
-                        operator=cond["operator"],
-                        value=cond.get("value")
-                    ))
                     
                 return Goal(
                     description=parsed.get("description", query),

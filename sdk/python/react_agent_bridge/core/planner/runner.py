@@ -492,7 +492,8 @@ CRITICAL RULES - follow these exactly:
 8. Toggle buttons (e.g. session checkboxes) are ON/OFF — clicking again will REMOVE the item. If the condition is already satisfied, do NOT click that button again.
 9. Respond ONLY with a valid JSON array. No markdown fences, no extra text.
 10. Do NOT perform setState on state slots whose corresponding input/interactive elements are not currently visible in the COMPONENT REGISTRY. For example, if a form field input (such as cardNumber or selectedSessions) is not rendered on the current screen, do not set its state slot value until you navigate to the screen where it is rendered.
-11. If the required component is not mounted yet, wait for it to appear. Never plan actions on unmounted components."""
+11. If the required component is not mounted yet, wait for it to appear. Never plan actions on unmounted components.
+12. Do NOT invoke store actions (such as 'ZustandStore#AuthStore.loginAction') directly via callAction if they require credentials or inputs that are not already described as taking zero arguments or are not provided in the parameters. Instead, when input fields and submit/login buttons are visible in the component registry, you MUST interact with those UI form fields using setState and click the submit button using dispatchEvent. Ensure you always use the submit/click buttons to trigger form submissions rather than direct store/action invocation. """
         if self.business_context:
             system_prompt += f"\n\nBUSINESS CONTEXT & CRITICAL RULES:\n{self.business_context}"
 
@@ -859,8 +860,15 @@ CRITICAL RULES - follow these exactly:
         # Sleep to allow React to render any final updates and WebSocket messages to be processed
         await asyncio.sleep(0.5)
 
+        status = "executed"
+        error = None
+        if consecutive_ineffective >= 5:
+            status = "failed"
+            error = "Aborted: too many consecutive ineffective or rejected commands"
+
         return {
-            "status": "executed",
+            "status": status,
+            "error": error,
             "action_history": action_history,
             "consecutive_ineffective_count": consecutive_ineffective,
             "step_count": step_count,
@@ -899,18 +907,33 @@ CRITICAL RULES - follow these exactly:
         while not self.bridge.graph.get_mounted_components() and (time.time() - start_wait) < 3.0:
             await asyncio.sleep(0.1)
 
-        # Decompose the high-level goal into sequential stages
-        print(f"{CYAN}Decomposing high-level goal into sequential stages...{RESET}")
-        stages = await self._decompose_goal(query)
-        print(f"{GREEN}Decomposed into {len(stages)} stages:{RESET}")
-        for idx, stage in enumerate(stages):
-            print(f"  {idx+1}. {stage}")
+        # Check if we have an applicable golden trace for the entire high-level query
+        active_trace = None
+        try:
+            from react_agent_bridge.discovery.traces import GoldenTraceStore
+            store = GoldenTraceStore(self.db_path)
+            live_values = self._get_values_dict()
+            traces = store.find_applicable_traces(query, live_values, min_confidence=0.8)
+            if traces:
+                active_trace = traces[0]
+                print(f"{CYAN}[Trace Replay] Found applicable golden trace for high-level goal (ID: {active_trace.trace_id}). Bypassing decomposition.{RESET}")
+        except Exception as e:
+            logger.error(f"Failed to query trace store for high-level goal: {e}")
+
+        if active_trace:
+            stages = [query]
+        else:
+            # Decompose the high-level goal into sequential stages
+            print(f"{CYAN}Decomposing high-level goal into sequential stages...{RESET}")
+            stages = await self._decompose_goal(query)
+            print(f"{GREEN}Decomposed into {len(stages)} stages:{RESET}")
+            for idx, stage in enumerate(stages):
+                print(f"  {idx+1}. {stage}")
 
         # Initialize global tracking variables across all stages
         global_action_history = []
         global_step_count = 0
         global_llm_calls_made = 0
-        active_trace = None
         trace_step_index = 0
 
         # Execute each stage sequentially
@@ -922,7 +945,13 @@ CRITICAL RULES - follow these exactly:
             # Get fresh snapshot to compile the goal for this stage
             snapshot = self.bridge.graph.snapshot()
             try:
-                goal = await self.bridge.llm_adapter.compile_goal(stage_query, snapshot)
+                import inspect
+                sig = inspect.signature(self.bridge.llm_adapter.compile_goal)
+                if "original_query" in sig.parameters:
+                    goal = await self.bridge.llm_adapter.compile_goal(stage_query, snapshot, original_query=query)
+                else:
+                    goal = await self.bridge.llm_adapter.compile_goal(stage_query, snapshot)
+
                 print(f"{GREEN}Successfully compiled sub-goal for stage {idx+1}!{RESET}")
                 print(f"  Description: {goal.description}")
                 print(f"  Success Conditions:")
@@ -952,6 +981,16 @@ CRITICAL RULES - follow these exactly:
                 "initial_values": live_values,
                 "llm_calls_made": global_llm_calls_made
             }
+
+            # Check if this stage's success conditions are already met before starting
+            success_met = True
+            for cond in goal.success_conditions:
+                if not cond.evaluate(self.bridge.graph):
+                    success_met = False
+                    break
+            if goal.success_conditions and success_met:
+                print(f"\n{GREEN}[Success] Stage {idx+1} already accomplished before start!{RESET}")
+                continue
 
             # Run the workflow for this stage
             result = await self.graph.ainvoke(state, config={"recursion_limit": 100})
