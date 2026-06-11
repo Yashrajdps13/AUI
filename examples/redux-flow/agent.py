@@ -8,12 +8,6 @@ This walkthrough demonstrates the core capabilities of the react-agent-bridge
 Python SDK with Redux Toolkit and shows the CLI commands developers can use to 
 inspect and control their React applications directly from the terminal.
 
-PREREQUISITE:
-Before running this script, run the first-time interactive setup:
-  react-agent-bridge setup
-
-Select "1" (Ollama) as your provider (default) or configure Gemini/OpenAI/Groq.
-
 TO RUN:
 1. Start the React Frontend:
    cd examples/redux-flow
@@ -24,12 +18,9 @@ TO RUN:
 """
 
 import asyncio
-import os
 import sys
-import time
 
 from react_agent_bridge.core.client import ReactAgentBridge
-from react_agent_bridge.core.planner.runner import AgentRunner
 
 # Color formatting for terminal outputs
 GREEN = "\033[1;32m"
@@ -141,35 +132,30 @@ async def main():
     print(f"\n{CYAN}State change listener registered. Go to your browser and trigger some changes!{RESET}")
     print("Click standard increment/decrement/setName buttons. Press [Enter] here to proceed...")
     input()
-    
-    # Remove listener so it doesn't clutter next logs
-    bridge.remove_listener("state_update", state_changed)
 
     # -------------------------------------------------------------
-    # STEP 4: Run Goal (Goal-Directed Planner)
+    # STEP 4: Direct Action Dispatching (Bypassing LLM Runner)
     # CLI Equivalent: react-agent-bridge run "increment the counter three times"
     # -------------------------------------------------------------
-    goal_desc = "increment the counter three times"
-    await prompt_step("Execute Automated Planning Goal", f'react-agent-bridge run "{goal_desc}"')
-    
-    # Resolve LLM model following the 4-level resolution priority
-    from react_agent_bridge.cli import resolve_and_check_llm
-    
-    model = resolve_and_check_llm()
-    print(f"\nInitialising AgentRunner using model '{model}'...")
-    
-    runner = AgentRunner(
-        bridge=bridge,
-        model=model,
-        max_steps=10
+    await prompt_step(
+        "Execute Direct Action Dispatches (Call Redux Dispatch via SDK)", 
+        'react-agent-bridge run "increment the counter three times"'
     )
     
-    print(f"{CYAN}Running goal against Redux frontend application...{RESET}")
-    res = await runner.execute(goal_desc)
-    print(f"Goal status: {res.get('status')}")
+    print(f"\n{CYAN}Dispatching counter/increment action 3 times directly via the bridge...{RESET}")
+    for i in range(3):
+        print(f"  Dispatching action {i+1}/3...")
+        try:
+            # Invokes storeName#redux.dispatch('counter/increment')
+            await bridge.call_action("ReduxStore#redux.dispatch", ["counter/increment"])
+        except Exception as e:
+            print(f"  {YELLOW}Action dispatch failed: {e}{RESET}")
+        await asyncio.sleep(0.5)
 
-    # Clean up bridge connection before exiting
+    # Clean up listener and bridge connection before exiting
+    bridge.remove_listener("state_update", state_changed)
     await bridge.stop()
+    
     print("\n================================================================================")
     print("      Walkthrough Tour Completed successfully!")
     print("================================================================================\n")
