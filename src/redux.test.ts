@@ -110,10 +110,15 @@ describe('bridgeRedux', () => {
     expect(entry?.actions).toBeDefined();
     expect(typeof entry?.actions?.dispatch).toBe('function');
 
+    // 1. Dispatch plain object
     entry?.actions?.dispatch({ type: 'user/setName', payload: 'Bob' });
-
     expect(store.dispatch).toHaveBeenCalledWith({ type: 'user/setName', payload: 'Bob' });
     expect(store.getState().user.name).toBe('Bob');
+
+    // 2. Dispatch action type string + payload
+    entry?.actions?.dispatch('user/setName', 'Charlie');
+    expect(store.dispatch).toHaveBeenCalledWith({ type: 'user/setName', payload: 'Charlie' });
+    expect(store.getState().user.name).toBe('Charlie');
 
     boundStore.unsubscribeReduxBridge();
   });

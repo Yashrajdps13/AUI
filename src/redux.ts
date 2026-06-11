@@ -48,7 +48,10 @@ export function bridgeRedux(
     }
 
     const actions: Record<string, Function> = {
-      dispatch: (action: any) => {
+      dispatch: (action: any, payload?: any) => {
+        if (typeof action === 'string') {
+          return store.dispatch({ type: action, payload });
+        }
         return store.dispatch(action);
       },
     };
